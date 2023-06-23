@@ -4,7 +4,7 @@
 """Sentinel datasets."""
 
 from collections.abc import Sequence
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 import matplotlib.pyplot as plt
 import torch
@@ -139,7 +139,7 @@ class Sentinel1(Sentinel):
 
     def __init__(
         self,
-        root: str = "data",
+        paths: Union[str, list[str]] = "data",
         crs: Optional[CRS] = None,
         res: float = 10,
         bands: Sequence[str] = ["VV", "VH"],
@@ -149,7 +149,8 @@ class Sentinel1(Sentinel):
         """Initialize a new Dataset instance.
 
         Args:
-            root: root directory where dataset can be found
+            paths: root directory or list of absolute filepaths where
+                dataset can be found
             crs: :term:`coordinate reference system (CRS)` to warp to
                 (defaults to the CRS of the first file found)
             res: resolution of the dataset in units of CRS
@@ -183,7 +184,7 @@ To create a dataset containing both, use:
 
         self.filename_glob = self.filename_glob.format(bands[0])
 
-        super().__init__(root, crs, res, bands, transforms, cache)
+        super().__init__(paths, crs, res, bands, transforms, cache)
 
     def plot(
         self,
@@ -292,7 +293,7 @@ class Sentinel2(Sentinel):
 
     def __init__(
         self,
-        root: str = "data",
+        paths: Union[str, list[str]] = "data",
         crs: Optional[CRS] = None,
         res: float = 10,
         bands: Optional[Sequence[str]] = None,
@@ -302,7 +303,8 @@ class Sentinel2(Sentinel):
         """Initialize a new Dataset instance.
 
         Args:
-            root: root directory where dataset can be found
+            paths: root directory or list of absolute filepaths where
+                dataset can be found
             crs: :term:`coordinate reference system (CRS)` to warp to
                 (defaults to the CRS of the first file found)
             res: resolution of the dataset in units of CRS
@@ -319,7 +321,7 @@ class Sentinel2(Sentinel):
         self.filename_glob = self.filename_glob.format(bands[0])
         self.filename_regex = self.filename_regex.format(res)
 
-        super().__init__(root, crs, res, bands, transforms, cache)
+        super().__init__(paths, crs, res, bands, transforms, cache)
 
     def plot(
         self,
