@@ -14,7 +14,7 @@ module:
 
 datamodule:
   _target_: torchgeo.datamodules.L7IrishDataModule
-  root: "tests/data/l7irish"
+  paths: "tests/data/l7irish"
   download: true
   batch_size: 1
   patch_size: 32

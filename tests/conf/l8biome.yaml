@@ -14,7 +14,7 @@ module:
 
 datamodule:
   _target_: torchgeo.datamodules.L8BiomeDataModule
-  root: "tests/data/l8biome"
+  paths: "tests/data/l8biome"
   download: true
   batch_size: 1
   patch_size: 32
