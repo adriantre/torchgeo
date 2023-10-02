@@ -279,10 +279,16 @@ class GeoDataset(Dataset[dict[str, Any]], abc.ABC):
 
     @property
     def files(self) -> set[str]:
-        """A list of all files in the dataset.
+        """A set of all available files in the dataset.
+
+        For all `paths`, finds local files that match `filename_glob`.
+        Recursively iterates any directory in `paths`.
+        Paths that do not match `filename_glob` in the local file system is by
+        default ignored. This behaviour may be overridden in
+        method `handle_nonlocal_path`.
 
         Returns:
-            All files in the dataset.
+            All available files in the dataset.
 
         .. versionadded:: 0.5
         """
@@ -295,13 +301,29 @@ class GeoDataset(Dataset[dict[str, Any]], abc.ABC):
         # Using set to remove any duplicates if directories are overlapping
         files: set[str] = set()
         for path in paths:
-            if os.path.isdir(path):
-                pathname = os.path.join(path, "**", self.filename_glob)
-                files |= set(glob.iglob(pathname, recursive=True))
+            if os.path.exists(path):
+                if os.path.isfile(path):
+                    files.add(path)
+                else:  # meaning os.path.isdir(path) == True, since exists is checked
+                    pathname = os.path.join(path, "**", self.filename_glob)
+                    files |= set(glob.iglob(pathname, recursive=True))
             else:
-                files.add(path)
+                files |= self.handle_nonlocal_path(path)
 
         return files
+
+    @staticmethod
+    def handle_nonlocal_path(path: str) -> set[str]:
+        """Defines hos to handle paths that can not be located by the os module.
+
+        Override this if you know that rasterio can read these files anyway.
+
+        Returns:
+            The empty set.
+
+        .. versionadded:: 0.5
+        """
+        return set()
 
 
 class RasterDataset(GeoDataset):
