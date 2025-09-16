@@ -845,8 +845,10 @@ def get_valid_footprint_from_datasource(
 ) -> MultiPolygon | Polygon:
     """Compute the valid data footprint of a raster dataset.
 
-    NB! If your dataset rely on nodata-value to create the masks, this might
-    add a lot of overhead. Consider writing nodata masks to file.
+    .. note::
+    
+       If your dataset rely on nodata-value to create the masks, this might
+       add a lot of overhead. Consider writing nodata masks to file.
 
     This function analyzes the raster's mask band to determine the spatial extent
     of valid (non-NoData) pixels, returning the result as a `Polygon` or `MultiPolygon`
