@@ -8,11 +8,10 @@ import os
 import numpy as np
 import pyproj
 import rasterio
+import shapely
 from rasterio import Affine
 from rasterio.crs import CRS
 from shapely.ops import transform
-
-from torchgeo.datasets.utils import get_valid_footprint_from_datasource
 
 SIZE = 128
 
@@ -186,9 +185,14 @@ def create_metadata_file(raster_path: str) -> None:
 
     # Calculate the actual valid footprint based on pixel values
     # by specifying nodata value. This will be stored in the metadata file.
-    with rasterio.open(raster_path, nodata=0) as src:
+    with rasterio.open(raster_path) as src:
         source_crs = src.crs
-        valid_data_footprint = get_valid_footprint_from_datasource(src)
+        valid_data_footprint = shapely.box(*src.bounds)
+        # TODO: Swap to the following when get_valid_footprint_from_datasource exists
+        # with WarpedVRT(src, nodata=0) as vrt:
+        #     valid_data_footprint = shapely.convex_hull(
+        #         get_valid_footprint_from_datasource(vrt)
+        #     )
 
     # .SAFE format always stores valid data footprint in WGS84
     target_crs = CRS.from_epsg(4326)
@@ -209,7 +213,9 @@ def create_metadata_file(raster_path: str) -> None:
         f.write(xml_content)
 
 
-def create_file(path: str, dtype: str, num_channels: int, nodata_value: float) -> None:
+def create_file(
+    path: str, dtype: str, num_channels: int, nodata_value: float | None
+) -> None:
     res = 10
     root, _ = os.path.splitext(path)
     if root.endswith('m'):
@@ -237,14 +243,15 @@ def create_file(path: str, dtype: str, num_channels: int, nodata_value: float) -
             dtype=profile['dtype'],
         )
 
-    # Define a triangle in the upper left corner of the raster
-    #  having nodata value. This simulates Sentinel2 acquisitions
-    #  not fully covering the MGRS cell which is the extent
-    #  the raster is clipped to by ESA.
-    rows, cols = np.ogrid[:raster_height, :raster_width]
-    cutoff = min(raster_height, raster_width) // 2
-    mask = rows + cols < cutoff
-    Z[mask] = nodata_value
+    if nodata_value is not None:
+        # Define a triangle in the upper left corner of the raster
+        #  having nodata value. This simulates Sentinel2 acquisitions
+        #  not fully covering the MGRS cell which is the extent
+        #  the raster is clipped to by ESA.
+        rows, cols = np.ogrid[:raster_height, :raster_width]
+        cutoff = min(raster_height, raster_width) // 2
+        mask = rows + cols < cutoff
+        Z[mask] = nodata_value
 
     with rasterio.open(path, 'w', **profile) as src:
         for i in range(1, profile['count'] + 1):
@@ -263,7 +270,8 @@ def create_directory(directory: str, hierarchy: FILENAME_HIERARCHY) -> None:
         prev_root = None
         for value in hierarchy:
             path = os.path.join(directory, value)
-            create_file(path, dtype='uint16', num_channels=1, nodata_value=0)
+            # Set nodata_value=0 when get_valid_footprint_from_datasource method exist
+            create_file(path, dtype='uint16', num_channels=1, nodata_value=None)
             # Create the metadata file once for each product
             if (curr_root := get_product_root(path)) != prev_root:
                 create_metadata_file(path)
