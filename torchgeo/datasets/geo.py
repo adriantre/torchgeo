@@ -437,25 +437,17 @@ class RasterDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
+        vrt = None
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
                 try:
-                    with rasterio.open(filepath) as src:
-                        # See if file has a color map
-                        if len(self.cmap) == 0:
-                            try:
-                                self.cmap = src.colormap(1)  # type: ignore[misc]
-                            except ValueError:
-                                pass
-
-                        if crs is None:
-                            crs = src.crs
-
-                        with WarpedVRT(src, crs=crs) as vrt:
-                            geometries.append(shapely.box(*vrt.bounds))
-                            if res is None:
-                                res = vrt.res
+                    vrt = self._load_warp_file(filepath=filepath, crs=crs)
+                    if crs is None:
+                        crs = vrt.crs
+                    geometries.append(shapely.box(*vrt.bounds))
+                    if res is None:
+                        res = vrt.res
                 except rasterio.errors.RasterioIOError:
                     # Skip files that rasterio is unable to read
                     continue
@@ -474,6 +466,9 @@ class RasterDataset(GeoDataset):
                         _, maxt = disambiguate_timestamp(stop, self.date_format)
 
                     datetimes.append((mint, maxt))
+                finally:
+                    if vrt is not None:
+                        vrt.close()
 
         if len(filepaths) == 0:
             raise DatasetNotFoundError(self)
@@ -603,20 +598,33 @@ class RasterDataset(GeoDataset):
         """
         return self._load_warp_file(filepath)
 
-    def _load_warp_file(self, filepath: Path) -> DatasetReader:
+    def _load_warp_file(self, filepath: Path, crs: CRS | None = None) -> DatasetReader:
         """Load and warp a file to the correct CRS and resolution.
 
         Args:
             filepath: file to load and warp
+            crs: Optionally specify which CRS to reproject to. This is used in __init__
+                as self.index.crs is not defined at this point.
 
         Returns:
             file handle of warped VRT
         """
+        if crs is None and hasattr(self, 'index'):
+            crs = self.crs
+
         src = rasterio.open(filepath)
 
+        # See if file has a color map
+        if len(self.cmap) == 0:
+            try:
+                self.cmap = src.colormap(1)  # type: ignore[misc]
+            except ValueError:
+                pass
+
         # Only warp if necessary
-        if src.crs != self.crs:
-            vrt = WarpedVRT(src, crs=self.crs)
+        if src.crs != crs:
+            vrt = WarpedVRT(src, crs=crs)
+
             src.close()
             return vrt
         else:
