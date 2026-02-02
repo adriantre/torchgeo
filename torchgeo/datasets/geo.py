@@ -673,16 +673,20 @@ class RasterDataset(GeoDataset):
         Returns:
             file handle of warped VRT
         """
-        if crs is None and hasattr(self, 'index'):
-            crs = self.crs
-
         src = rasterio.open(filepath)
+
+        if crs is None:
+            try:
+                crs = self.crs
+            except AttributeError:
+                crs = src.crs
+
         left = min(src.bounds.left, src.bounds.right)
         bottom = min(src.bounds.bottom, src.bounds.top)
         right = max(src.bounds.left, src.bounds.right)
         top = max(src.bounds.bottom, src.bounds.top)
         transform, width, height = rasterio.warp.calculate_default_transform(
-            src.crs, self.crs, src.width, src.height, left, bottom, right, top
+            src.crs, crs, src.width, src.height, left, bottom, right, top
         )
 
         # Only warp if necessary
