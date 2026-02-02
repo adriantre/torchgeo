@@ -12,7 +12,6 @@ import pandas as pd
 import pytest
 import torch
 import torch.nn as nn
-from pyproj import CRS
 from pytest import MonkeyPatch
 
 from torchgeo.datasets import (
@@ -42,7 +41,6 @@ class TestL8Biome:
     def test_getitem(self, dataset: L8Biome) -> None:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
-        assert isinstance(x['crs'], CRS)
         assert isinstance(x['image'], torch.Tensor)
         assert isinstance(x['mask'], torch.Tensor)
 
@@ -84,9 +82,9 @@ class TestL8Biome:
         dataset.plot(x, suptitle='Prediction')
         plt.close()
 
-    def test_invalid_query(self, dataset: L8Biome) -> None:
+    def test_invalid_index(self, dataset: L8Biome) -> None:
         with pytest.raises(
-            IndexError, match=r'query: .* not found in index with bounds:'
+            IndexError, match=r'index: .* not found in dataset with bounds:'
         ):
             dataset[0:0, 0:0, pd.Timestamp.min : pd.Timestamp.min]
 

@@ -16,13 +16,13 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError
 from .geo import NonGeoDataset
-from .utils import Path, download_url, lazy_import, percentile_normalization
+from .utils import Path, Sample, download_url, lazy_import, percentile_normalization
 
 
 class ChaBuD(NonGeoDataset):
     """ChaBuD dataset.
 
-    `ChaBuD <https://huggingface.co/spaces/competitions/ChaBuD-ECML-PKDD2023>`__
+    `ChaBuD <https://github.com/lccol/chabud-challenge-description>`__
     is a dataset for Change detection for Burned area Delineation and is used
     for the ChaBuD ECML-PKDD 2023 Discovery Challenge.
 
@@ -44,7 +44,7 @@ class ChaBuD(NonGeoDataset):
 
     If you use this dataset in your research, please cite the following paper:
 
-    * https://doi.org/10.1016/j.rse.2021.112603
+    * https://doi.org/10.1109/MGRS.2023.3292467
 
     .. note::
 
@@ -80,7 +80,7 @@ class ChaBuD(NonGeoDataset):
         root: Path = 'data',
         split: str = 'train',
         bands: Sequence[str] = all_bands,
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -118,8 +118,11 @@ class ChaBuD(NonGeoDataset):
 
         self.uuids = self._load_uuids()
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
+
+        .. versionchanged:: 0.8
+           Now returns a single T x C x H x W image.
 
         Args:
             index: index to return
@@ -227,10 +230,7 @@ class ChaBuD(NonGeoDataset):
             )
 
     def plot(
-        self,
-        sample: dict[str, Tensor],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 
@@ -262,7 +262,7 @@ class ChaBuD(NonGeoDataset):
             prediction = sample['prediction'][0]
             ncols += 1
 
-        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(10, ncols * 5))
+        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(ncols * 5, 10))
 
         axs[0].imshow(einops.rearrange(image_pre, 'c h w -> h w c'))
         axs[0].axis('off')

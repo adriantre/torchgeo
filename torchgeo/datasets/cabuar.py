@@ -16,7 +16,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError
 from .geo import NonGeoDataset
-from .utils import Path, download_url, lazy_import, percentile_normalization
+from .utils import Path, Sample, download_url, lazy_import, percentile_normalization
 
 
 class CaBuAr(NonGeoDataset):
@@ -87,7 +87,7 @@ class CaBuAr(NonGeoDataset):
         root: Path = 'data',
         split: str = 'train',
         bands: tuple[str, ...] = all_bands,
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -128,8 +128,11 @@ class CaBuAr(NonGeoDataset):
 
         self.uuids = self._load_uuids()
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
+
+        .. versionchanged:: 0.8
+           Now returns a single T x C x H x W image.
 
         Args:
             index: index to return
@@ -242,10 +245,7 @@ class CaBuAr(NonGeoDataset):
                 )
 
     def plot(
-        self,
-        sample: dict[str, Tensor],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 
@@ -277,7 +277,7 @@ class CaBuAr(NonGeoDataset):
             prediction = sample['prediction'][0]
             ncols += 1
 
-        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(10, ncols * 5))
+        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(ncols * 5, 10))
 
         axs[0].imshow(einops.rearrange(image_pre, 'c h w -> h w c'))
         axs[0].axis('off')

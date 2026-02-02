@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import pytest
 import torch
 import torch.nn as nn
-from pyproj import CRS
 from pytest import MonkeyPatch
 
 from torchgeo.datasets import (
@@ -42,7 +41,6 @@ class TestCMSGlobalMangroveCanopy:
     def test_getitem(self, dataset: CMSGlobalMangroveCanopy) -> None:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
-        assert isinstance(x['crs'], CRS)
         assert isinstance(x['mask'], torch.Tensor)
 
     def test_len(self, dataset: CMSGlobalMangroveCanopy) -> None:
@@ -88,14 +86,14 @@ class TestCMSGlobalMangroveCanopy:
         assert isinstance(ds, UnionDataset)
 
     def test_plot(self, dataset: CMSGlobalMangroveCanopy) -> None:
-        query = dataset.bounds
-        x = dataset[query]
+        index = dataset.bounds
+        x = dataset[index]
         dataset.plot(x, suptitle='Test')
         plt.close()
 
     def test_plot_prediction(self, dataset: CMSGlobalMangroveCanopy) -> None:
-        query = dataset.bounds
-        x = dataset[query]
+        index = dataset.bounds
+        x = dataset[index]
         x['prediction'] = x['mask'].clone()
         dataset.plot(x, suptitle='Prediction')
         plt.close()

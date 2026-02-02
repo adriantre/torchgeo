@@ -7,7 +7,7 @@ import os
 from collections.abc import Callable, Sequence
 from typing import ClassVar
 
-import fiona
+import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError
 from .geo import NonGeoDataset
-from .utils import Path, check_integrity, download_url, extract_archive
+from .utils import Path, Sample, check_integrity, download_url, extract_archive
 
 
 class PASTIS(NonGeoDataset):
@@ -133,7 +133,7 @@ class PASTIS(NonGeoDataset):
         folds: Sequence[int] = (1, 2, 3, 4, 5),
         bands: str = 's2',
         mode: str = 'semantic',
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -179,7 +179,7 @@ class PASTIS(NonGeoDataset):
             )
         self._cmap = ListedColormap(colors)
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
 
         Args:
@@ -290,13 +290,11 @@ class PASTIS(NonGeoDataset):
         Returns:
             list of dicts containing image and semantic/instance target file paths
         """
-        self.idxs = []
         metadata_fn = os.path.join(self.root, self.directory, 'metadata.geojson')
-        with fiona.open(metadata_fn) as f:
-            for row in f:
-                fold = int(row['properties']['Fold'])
-                if fold in self.folds:
-                    self.idxs.append(row['properties']['ID_PATCH'])
+        gdf = gpd.read_file(metadata_fn)
+        gdf['Fold'] = gdf['Fold'].astype(int)
+        gdf = gdf[gdf['Fold'].isin(self.folds)]
+        self.idxs = gdf['ID_PATCH'].tolist()
 
         files = []
         for i in self.idxs:
@@ -345,10 +343,7 @@ class PASTIS(NonGeoDataset):
         extract_archive(os.path.join(self.root, self.filename), self.root)
 
     def plot(
-        self,
-        sample: dict[str, Tensor],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 

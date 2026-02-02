@@ -21,8 +21,13 @@ from torchgeo.models import (
     ResNet50_Weights,
     ResNet152_Weights,
     ScaleMAELarge16_Weights,
+    Swin_B_Weights,
+    Swin_S_Weights,
+    Swin_T_Weights,
     Swin_V2_B_Weights,
     Swin_V2_T_Weights,
+    Tessera_Weights,
+    TileNet_Weights,
     Unet_Weights,
     ViTBase14_DINOv2_Weights,
     ViTBase16_Weights,
@@ -30,7 +35,6 @@ from torchgeo.models import (
     ViTLarge16_Weights,
     ViTSmall14_DINOv2_Weights,
     ViTSmall16_Weights,
-    YOLO_Weights,
     aurora_swin_unet,
     copernicusfm_base,
     croma_base,
@@ -49,8 +53,13 @@ from torchgeo.models import (
     resnet50,
     resnet152,
     scalemae_large_patch16,
+    swin_b,
+    swin_s,
+    swin_t,
     swin_v2_b,
     swin_v2_t,
+    tessera,
+    tilenet,
     unet,
     vit_base_patch14_dinov2,
     vit_base_patch16_224,
@@ -58,7 +67,6 @@ from torchgeo.models import (
     vit_large_patch16_224,
     vit_small_patch14_dinov2,
     vit_small_patch16_224,
-    yolo,
 )
 
 builders = [
@@ -76,8 +84,13 @@ builders = [
     resnet50,
     resnet152,
     scalemae_large_patch16,
+    swin_t,
+    swin_s,
+    swin_b,
     swin_v2_t,
     swin_v2_b,
+    tilenet,
+    tessera,
     unet,
     vit_base_patch14_dinov2,
     vit_base_patch16_224,
@@ -85,7 +98,6 @@ builders = [
     vit_large_patch16_224,
     vit_small_patch14_dinov2,
     vit_small_patch16_224,
-    yolo,
 ]
 enums = [
     Aurora_Weights,
@@ -100,8 +112,13 @@ enums = [
     ResNet50_Weights,
     ResNet152_Weights,
     ScaleMAELarge16_Weights,
+    Swin_T_Weights,
+    Swin_S_Weights,
+    Swin_B_Weights,
     Swin_V2_T_Weights,
     Swin_V2_B_Weights,
+    TileNet_Weights,
+    Tessera_Weights,
     Unet_Weights,
     ViTBase14_DINOv2_Weights,
     ViTBase16_Weights,
@@ -109,7 +126,6 @@ enums = [
     ViTLarge16_Weights,
     ViTSmall14_DINOv2_Weights,
     ViTSmall16_Weights,
-    YOLO_Weights,
 ]
 
 
@@ -117,8 +133,6 @@ enums = [
 def test_get_model(builder: Callable[..., nn.Module]) -> None:
     if builder == aurora_swin_unet:
         pytest.importorskip('aurora')
-    elif builder == yolo:
-        pytest.importorskip('ultralytics', minversion='8.3')
 
     model = get_model(builder.__name__)
     assert isinstance(model, nn.Module)
@@ -138,7 +152,7 @@ def test_get_model_weights(builder: Callable[..., nn.Module]) -> None:
 
 @pytest.mark.parametrize('enum', enums)
 def test_get_weight(enum: WeightsEnum) -> None:
-    for weight in enum:
+    for weight in enum:  # type: ignore[not-iterable]
         assert weight == get_weight(str(weight))
 
 

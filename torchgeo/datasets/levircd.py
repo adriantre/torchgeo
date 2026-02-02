@@ -19,7 +19,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError
 from .geo import NonGeoDataset
-from .utils import Path, download_and_extract_archive, percentile_normalization
+from .utils import Path, Sample, download_and_extract_archive, percentile_normalization
 
 
 class LEVIRCDBase(NonGeoDataset, abc.ABC):
@@ -35,7 +35,7 @@ class LEVIRCDBase(NonGeoDataset, abc.ABC):
         self,
         root: Path = 'data',
         split: str = 'train',
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -68,8 +68,11 @@ class LEVIRCDBase(NonGeoDataset, abc.ABC):
 
         self.files = self._load_files(self.root, self.split)
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
+
+        .. versionchanged:: 0.8
+           Now returns a single T x C x H x W image.
 
         Args:
             index: index to return
@@ -130,10 +133,7 @@ class LEVIRCDBase(NonGeoDataset, abc.ABC):
             return einops.rearrange(tensor, 'h w -> () h w')
 
     def plot(
-        self,
-        sample: dict[str, Tensor],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 
@@ -158,7 +158,7 @@ class LEVIRCDBase(NonGeoDataset, abc.ABC):
         if 'prediction' in sample:
             ncols += 1
 
-        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(10, ncols * 5))
+        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(ncols * 5, 10))
 
         axs[0].imshow(image1)
         axs[0].axis('off')

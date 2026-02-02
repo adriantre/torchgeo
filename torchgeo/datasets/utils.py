@@ -6,13 +6,17 @@
 # https://github.com/sphinx-doc/sphinx/issues/11327
 from __future__ import annotations
 
+import bz2
 import collections
 import contextlib
 import importlib
 import os
+import pathlib
 import shutil
 import subprocess
+import tarfile
 import warnings
+import zipfile
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -21,15 +25,16 @@ from typing import Any, TypeAlias, cast, overload
 import numpy as np
 import pandas as pd
 import rasterio
-import shapely
+import shapely.affinity
 import torch
+from pandas import Timedelta, Timestamp
 from rasterio import Affine
+from shapely import Geometry
 from torch import Tensor
 from torchvision.datasets.utils import (
     check_integrity,
     download_and_extract_archive,
     download_url,
-    extract_archive,
 )
 from torchvision.utils import draw_segmentation_masks
 from typing_extensions import deprecated
@@ -37,18 +42,15 @@ from typing_extensions import deprecated
 from .errors import DependencyNotFoundError
 
 # Only include import redirects
-__all__ = (
-    'check_integrity',
-    'download_and_extract_archive',
-    'download_url',
-    'extract_archive',
-)
+__all__ = ('check_integrity', 'download_and_extract_archive', 'download_url')
 
 
-GeoSlice: TypeAlias = (
+# Waiting to upgrade Sphinx before switching to type statement
+GeoSlice: TypeAlias = (  # noqa: UP040
     slice | tuple[slice] | tuple[slice, slice] | tuple[slice, slice, slice]
 )
-Path: TypeAlias = str | os.PathLike[str]
+Path: TypeAlias = str | os.PathLike[str]  # noqa: UP040
+Sample: TypeAlias = dict[str, Any]  # noqa: UP040
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
@@ -298,9 +300,42 @@ class Executable:
         return subprocess.run((self.name, *args), **kwargs)
 
 
-def disambiguate_timestamp(
-    date_str: str | None, format: str
-) -> tuple[datetime, datetime]:
+def extract_archive(
+    from_path: Path, to_path: Path | None = None, remove_finished: bool = False
+) -> Path:
+    """Extract an archive.
+
+    Args:
+        from_path: Path to the file to be extracted.
+        to_path: Path to the directory the file will be extracted to.
+            Defaults to the directory of *from_path*.
+        remove_finished: If True, remove *from_path* after extraction.
+
+    Returns:
+        Path to the directory the file was extracted to.
+    """
+    to_path = to_path or os.path.dirname(from_path)
+    suffixes = pathlib.Path(from_path).suffixes
+
+    if suffixes[-1] == '.zip':
+        with zipfile.ZipFile(from_path, 'r') as z:
+            z.extractall(to_path)
+    elif suffixes[-1] == '.bz2' and '.tar' not in suffixes:
+        stem = pathlib.Path(from_path).stem
+        to_path = os.path.join(to_path, stem)
+        with bz2.open(from_path, 'rb') as src, open(to_path, 'wb') as dst:
+            dst.write(src.read())
+    else:
+        with tarfile.open(from_path, 'r') as t:
+            t.extractall(to_path, filter='data')
+
+    if remove_finished:
+        os.remove(from_path)
+
+    return to_path
+
+
+def disambiguate_timestamp(date_str: str, format: str) -> tuple[Timestamp, Timestamp]:
     """Disambiguate partial timestamps.
 
     TorchGeo stores the timestamp of each file in a pandas IntervalIndex. If the full
@@ -316,10 +351,7 @@ def disambiguate_timestamp(
     Returns:
         (mint, maxt) tuple for indexing
     """
-    if not isinstance(date_str, str):
-        return pd.NaT, pd.NaT
-
-    mint = datetime.strptime(date_str, format)
+    mint = pd.to_datetime(date_str, format=format)
     format = format.replace('%%', '')
 
     # TODO: May have issues with time zones, UTC vs. local time, and DST
@@ -327,33 +359,33 @@ def disambiguate_timestamp(
 
     if not any([f'%{c}' in format for c in 'yYcxG']):
         # No temporal info
-        return pd.Timestamp.min, pd.Timestamp.max
+        return Timestamp.min, Timestamp.max
     elif not any([f'%{c}' in format for c in 'bBmjUWcxV']):
         # Year resolution
-        maxt = datetime(mint.year + 1, 1, 1)
+        maxt = Timestamp(year=mint.year + 1, month=1, day=1)
     elif not any([f'%{c}' in format for c in 'aAwdjcxV']):
         # Month resolution
         if mint.month == 12:
-            maxt = datetime(mint.year + 1, 1, 1)
+            maxt = Timestamp(year=mint.year + 1, month=1, day=1)
         else:
-            maxt = datetime(mint.year, mint.month + 1, 1)
+            maxt = Timestamp(year=mint.year, month=mint.month + 1, day=1)
     elif not any([f'%{c}' in format for c in 'HIcX']):
         # Day resolution
-        maxt = mint + timedelta(days=1)
+        maxt = mint + Timedelta(days=1)
     elif not any([f'%{c}' in format for c in 'McX']):
         # Hour resolution
-        maxt = mint + timedelta(hours=1)
+        maxt = mint + Timedelta(hours=1)
     elif not any([f'%{c}' in format for c in 'ScX']):
         # Minute resolution
-        maxt = mint + timedelta(minutes=1)
+        maxt = mint + Timedelta(minutes=1)
     elif not any([f'%{c}' in format for c in 'f']):
         # Second resolution
-        maxt = mint + timedelta(seconds=1)
+        maxt = mint + Timedelta(seconds=1)
     else:
         # Microsecond resolution
-        maxt = mint + timedelta(microseconds=1)
+        maxt = mint + Timedelta(microseconds=1)
 
-    maxt -= timedelta(microseconds=1)
+    maxt -= Timedelta(microseconds=1)
 
     return mint, maxt
 
@@ -742,7 +774,7 @@ def lazy_import(name: str) -> Any:
         # Map from import name to package name on PyPI
         name = name.split('.')[0].replace('_', '-')
         module_to_pypi: dict[str, str] = collections.defaultdict(lambda: name)
-        module_to_pypi |= {'cv2': 'opencv-python', 'skimage': 'scikit-image'}
+        module_to_pypi |= {'skimage': 'scikit-image'}
         name = module_to_pypi[name]
         msg = f"""\
 {name} is not installed and is required to use this feature. Either run:
@@ -779,12 +811,12 @@ def which(name: Path) -> Executable:
 
 
 def convert_poly_coords(
-    geom: shapely.geometry.shape, affine_obj: Affine, inverse: bool = False
-) -> shapely.geometry.shape:
+    geom: Geometry, affine_obj: Affine, inverse: bool = False
+) -> Geometry:
     """Convert geocoordinates to pixel coordinates and vice versa, based on `affine_obj`.
 
     Args:
-        geom: shapely.geometry.shape to convert
+        geom: shape to convert
         affine_obj: rasterio.Affine object to use for geoconversion
         inverse: If true, convert geocoordinates to pixel coordinates
 

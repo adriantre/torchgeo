@@ -16,7 +16,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError, RGBBandsMissingError
 from .geo import NonGeoDataset
-from .utils import Path, which
+from .utils import Path, Sample, which
 
 
 class CV4AKenyaCropType(NonGeoDataset):
@@ -108,7 +108,7 @@ class CV4AKenyaCropType(NonGeoDataset):
         chip_size: int = 256,
         stride: int = 128,
         bands: Sequence[str] = all_bands,
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
     ) -> None:
         """Initialize a new CV4A Kenya Crop Type Dataset instance.
@@ -151,7 +151,7 @@ class CV4AKenyaCropType(NonGeoDataset):
                 ]:
                     self.chips_metadata.append((tile_index, y, x))
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
 
         Args:
@@ -284,7 +284,7 @@ class CV4AKenyaCropType(NonGeoDataset):
 
     def plot(
         self,
-        sample: dict[str, Tensor],
+        sample: Sample,
         show_titles: bool = True,
         time_step: int = 0,
         suptitle: str | None = None,
@@ -314,15 +314,15 @@ class CV4AKenyaCropType(NonGeoDataset):
 
         if 'prediction' in sample:
             prediction = sample['prediction']
-            n_cols = 3
+            ncols = 3
         else:
-            n_cols = 2
+            ncols = 2
 
         image, mask = sample['image'], sample['mask']
 
         image = image[time_step, rgb_indices]
 
-        fig, axs = plt.subplots(nrows=1, ncols=n_cols, figsize=(10, n_cols * 5))
+        fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=(ncols * 5, 10))
 
         axs[0].imshow(image.permute(1, 2, 0))
         axs[0].axis('off')

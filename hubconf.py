@@ -22,8 +22,13 @@ from torchgeo.models import (
     resnet50,
     resnet152,
     scalemae_large_patch16,
+    swin_b,
+    swin_s,
+    swin_t,
     swin_v2_b,
     swin_v2_t,
+    tessera,
+    tilenet,
     unet,
     vit_base_patch14_dinov2,
     vit_base_patch16_224,
@@ -31,7 +36,6 @@ from torchgeo.models import (
     vit_large_patch16_224,
     vit_small_patch14_dinov2,
     vit_small_patch16_224,
-    yolo,
 )
 
 __all__ = (
@@ -49,8 +53,13 @@ __all__ = (
     'resnet50',
     'resnet152',
     'scalemae_large_patch16',
+    'swin_b',
+    'swin_s',
+    'swin_t',
     'swin_v2_b',
     'swin_v2_t',
+    'tessera',
+    'tilenet',
     'unet',
     'vit_base_patch14_dinov2',
     'vit_base_patch16_224',
@@ -58,7 +67,6 @@ __all__ = (
     'vit_large_patch16_224',
     'vit_small_patch14_dinov2',
     'vit_small_patch16_224',
-    'yolo',
 )
 
 dependencies = [
@@ -67,5 +75,4 @@ dependencies = [
     'segmentation_models_pytorch',
     'timm',
     'torchvision',
-    'ultralytics',
 ]

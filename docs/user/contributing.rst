@@ -102,7 +102,7 @@ Mypy won't fix your code for you, but will warn you about potential issues with 
 
 .. code-block:: console
 
-   $ mypy .
+   $ mypy
 
 
 If you've never used mypy before or aren't familiar with `Python type hints <https://docs.python.org/3/library/typing.html>`_, this check can be particularly daunting. Don't hesitate to ask for help with resolving any of these warnings on your pull request.
@@ -134,8 +134,8 @@ All of our documentation is hosted on `Read the Docs <https://about.readthedocs.
 
    $ pip install .[docs]
    $ cd docs
-   $ pip install -r requirements.txt
 
+Pandoc must also be installed. You can download it from the `official Pandoc website <https://pandoc.org/installing.html>`_ and ensure it is included in your system PATH.
 
 Then run the following commands:
 

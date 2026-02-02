@@ -6,11 +6,10 @@
 from typing import Any
 
 import kornia.augmentation as K
-from torch import Tensor
 
 from ..datasets import InriaAerialImageLabeling
+from ..datasets.utils import Sample
 from ..samplers.utils import _to_tuple
-from ..transforms.transforms import _ExtractPatches
 from .geo import NonGeoDataModule
 
 
@@ -59,14 +58,14 @@ class InriaAerialImageLabelingDataModule(NonGeoDataModule):
         )
         self.aug = K.AugmentationSequential(
             K.Normalize(mean=self.mean, std=self.std),
-            _ExtractPatches(window_size=self.patch_size),
+            K.CenterCrop(self.patch_size),
             data_keys=None,
             keepdim=True,
             same_on_batch=True,
         )
         self.predict_aug = K.AugmentationSequential(
             K.Normalize(mean=self.mean, std=self.std),
-            _ExtractPatches(window_size=self.patch_size),
+            K.CenterCrop(self.patch_size),
             data_keys=None,
             keepdim=True,
             same_on_batch=True,
@@ -86,9 +85,7 @@ class InriaAerialImageLabelingDataModule(NonGeoDataModule):
             # Test set masks are not public, use for prediction instead
             self.predict_dataset = InriaAerialImageLabeling(split='test', **self.kwargs)
 
-    def on_after_batch_transfer(
-        self, batch: dict[str, Tensor], dataloader_idx: int
-    ) -> dict[str, Tensor]:
+    def on_after_batch_transfer(self, batch: Sample, dataloader_idx: int) -> Sample:
         """Apply batch augmentations to the batch after it is transferred to the device.
 
         Args:

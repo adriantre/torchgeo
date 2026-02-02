@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 import torch
 import torch.nn as nn
-from pyproj import CRS
 from pytest import MonkeyPatch
 
 from torchgeo.datasets import (
@@ -44,7 +43,6 @@ class TestGlobBiomass:
     def test_getitem(self, dataset: GlobBiomass) -> None:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
-        assert isinstance(x['crs'], CRS)
         assert isinstance(x['mask'], torch.Tensor)
 
     def test_len(self, dataset: GlobBiomass) -> None:
@@ -72,20 +70,20 @@ class TestGlobBiomass:
         assert isinstance(ds, UnionDataset)
 
     def test_plot(self, dataset: GlobBiomass) -> None:
-        query = dataset.bounds
-        x = dataset[query]
+        index = dataset.bounds
+        x = dataset[index]
         dataset.plot(x, suptitle='Test')
         plt.close()
 
     def test_plot_prediction(self, dataset: GlobBiomass) -> None:
-        query = dataset.bounds
-        x = dataset[query]
+        index = dataset.bounds
+        x = dataset[index]
         x['prediction'] = x['mask'].clone()
         dataset.plot(x, suptitle='Prediction')
         plt.close()
 
-    def test_invalid_query(self, dataset: GlobBiomass) -> None:
+    def test_invalid_index(self, dataset: GlobBiomass) -> None:
         with pytest.raises(
-            IndexError, match=r'query: .* not found in index with bounds:'
+            IndexError, match=r'index: .* not found in dataset with bounds:'
         ):
             dataset[100:100, 100:100, pd.Timestamp.min : pd.Timestamp.min]

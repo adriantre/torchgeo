@@ -25,6 +25,7 @@ from torchgeo.datasets.geo import NonGeoDataset
 from ..errors import DatasetNotFoundError, RGBBandsMissingError
 from ..utils import (
     Path,
+    Sample,
     array_to_tensor,
     disambiguate_timestamp,
     download_and_extract_archive,
@@ -91,7 +92,7 @@ class CopernicusBenchBase(NonGeoDataset, ABC):
         root: Path = 'data',
         split: Literal['train', 'val', 'test'] = 'train',
         bands: Sequence[str] | None = None,
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -120,7 +121,7 @@ class CopernicusBenchBase(NonGeoDataset, ABC):
         self._verify()
 
         filepath = os.path.join(root, self.directory, self.filename.format(split))
-        self.files = pd.read_csv(filepath, header=None)[0]
+        self.files: pd.Series | pd.DataFrame = pd.read_csv(filepath, header=None)[0]
 
     def __len__(self) -> int:
         """Return the length of the dataset.
@@ -139,7 +140,7 @@ class CopernicusBenchBase(NonGeoDataset, ABC):
         Returns:
             An image sample.
         """
-        sample: dict[str, Tensor] = {}
+        sample: Sample = {}
         with rio.open(path) as f:
             # Image
             image = f.read(self.band_indices).astype(np.float32)
@@ -180,7 +181,7 @@ class CopernicusBenchBase(NonGeoDataset, ABC):
         Returns:
             A target sample.
         """
-        sample: dict[str, Tensor] = {}
+        sample: Sample = {}
         with rio.open(path) as f:
             sample['mask'] = array_to_tensor(f.read(1)).to(self.dtype)
 
@@ -215,10 +216,7 @@ class CopernicusBenchBase(NonGeoDataset, ABC):
         download_and_extract_archive(self.url, self.root, md5=md5)
 
     def plot(
-        self,
-        sample: dict[str, Tensor],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 

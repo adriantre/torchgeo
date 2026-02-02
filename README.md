@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/torchgeo/torchgeo/main/logo/logo-color.svg" width="400" alt="TorchGeo logo"/>
+<img class="dark-light" src="https://raw.githubusercontent.com/torchgeo/torchgeo/main/logo/logo-color.svg" width="400" alt="TorchGeo logo"/>
 
 TorchGeo is a [PyTorch](https://pytorch.org/) domain library, similar to [torchvision](https://pytorch.org/vision), providing datasets, samplers, transforms, and pre-trained models specific to geospatial data.
 
@@ -12,6 +12,7 @@ Community:
 [![osgeo](https://img.shields.io/badge/OSGeo-join-4CB05B?logo=osgeo)](https://www.osgeo.org/community/getting-started-osgeo/)
 [![huggingface](https://img.shields.io/badge/Hugging_Face-join-FFD21E?logo=huggingface)](https://huggingface.co/torchgeo)
 [![pytorch](https://img.shields.io/badge/PyTorch-join-DE3412?logo=pytorch)](https://pytorch.org/ecosystem/join)
+[![youtube](https://img.shields.io/badge/YouTube-subscribe-FF0000?logo=youtube)](https://www.youtube.com/@TorchGeo)
 
 Packaging:
 [![pypi](https://badge.fury.io/py/torchgeo.svg)](https://pypi.org/project/torchgeo/)
@@ -36,17 +37,14 @@ For [conda](https://docs.conda.io/) and [spack](https://spack.io/) installation 
 
 ## Documentation
 
-You can find the documentation for TorchGeo on [ReadTheDocs](https://torchgeo.readthedocs.io). This includes API documentation, contributing instructions, and several [tutorials](https://torchgeo.readthedocs.io/en/stable/tutorials/getting_started.html). For more details, check out our [paper](https://arxiv.org/abs/2111.08872), [blog post](https://pytorch.org/blog/geospatial-deep-learning-with-torchgeo/), and YouTube videos (below).
+You can find the documentation for TorchGeo on [ReadTheDocs](https://torchgeo.readthedocs.io). This includes API documentation, contributing instructions, and several [tutorials](https://torchgeo.readthedocs.io/en/stable/tutorials/getting_started.html). For more details, check out our [paper](https://arxiv.org/abs/2111.08872), [blog post](https://pytorch.org/blog/geospatial-deep-learning-with-torchgeo/), and [YouTube channel](https://www.youtube.com/@TorchGeo).
 
 <p float="left">
     <a href="https://www.youtube.com/watch?v=0HfykJa-foE">
-        <img src="https://img.youtube.com/vi/0HfykJa-foE/0.jpg" style="width:32%;">
+        <img src="https://img.youtube.com/vi/0HfykJa-foE/0.jpg" style="width:49%;">
     </a>
     <a href="https://www.youtube.com/watch?v=ET8Hb_HqNJQ">
-        <img src="https://img.youtube.com/vi/ET8Hb_HqNJQ/0.jpg" style="width:32%;">
-    </a>
-    <a href="https://www.youtube.com/watch?v=R_FhY8aq708">
-        <img src="https://img.youtube.com/vi/R_FhY8aq708/0.jpg" style="width:32%;">
+        <img src="https://img.youtube.com/vi/ET8Hb_HqNJQ/0.jpg" style="width:49%;">
     </a>
 </p>
 
@@ -257,14 +255,15 @@ See the [Lightning documentation](https://lightning.ai/docs/pytorch/stable/cli/l
 If you use this software in your work, please cite our [paper](https://doi.org/10.1145/3707459):
 
 ```bibtex
-@article{Stewart_TorchGeo_Deep_Learning_2024,
+@article{stewart2024torchgeo,
     author = {Stewart, Adam J. and Robinson, Caleb and Corley, Isaac A. and Ortiz, Anthony and Lavista Ferres, Juan M. and Banerjee, Arindam},
-    doi = {10.1145/3707459},
-    journal = {ACM Transactions on Spatial Algorithms and Systems},
-    month = dec,
     title = {{TorchGeo}: Deep Learning With Geospatial Data},
-    url = {https://doi.org/10.1145/3707459},
-    year = {2024}
+    journal = {ACM Transactions on Spatial Algorithms and Systems},
+    volume = {11},
+    number = {4},
+    pages = {1--28},
+    month = aug,
+    year = {2025}
 }
 ```
 

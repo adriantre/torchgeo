@@ -11,7 +11,6 @@ import pandas as pd
 import pytest
 import torch
 import torch.nn as nn
-from pyproj import CRS
 from pytest import MonkeyPatch
 
 from torchgeo.datasets import (
@@ -37,7 +36,6 @@ class TestIOBench:
     def test_getitem(self, dataset: IOBench) -> None:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
-        assert isinstance(x['crs'], CRS)
         assert isinstance(x['image'], torch.Tensor)
         assert isinstance(x['mask'], torch.Tensor)
 
@@ -71,9 +69,9 @@ class TestIOBench:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             IOBench(tmp_path)
 
-    def test_invalid_query(self, dataset: IOBench) -> None:
+    def test_invalid_index(self, dataset: IOBench) -> None:
         with pytest.raises(
-            IndexError, match=r'query: .* not found in index with bounds:'
+            IndexError, match=r'index: .* not found in dataset with bounds:'
         ):
             dataset[0:0, 0:0, pd.Timestamp.min : pd.Timestamp.min]
 

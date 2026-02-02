@@ -11,7 +11,6 @@ import pytest
 import torch
 import torch.nn as nn
 from _pytest.fixtures import SubRequest
-from pyproj import CRS
 from pytest import MonkeyPatch
 
 from torchgeo.datasets import (
@@ -58,7 +57,6 @@ class TestEnviroAtlas:
     def test_getitem(self, dataset: EnviroAtlas) -> None:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
-        assert isinstance(x['crs'], CRS)
         assert isinstance(x['mask'], torch.Tensor)
 
     def test_len(self, dataset: EnviroAtlas) -> None:
@@ -86,20 +84,20 @@ class TestEnviroAtlas:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             EnviroAtlas(tmp_path, checksum=True)
 
-    def test_out_of_bounds_query(self, dataset: EnviroAtlas) -> None:
+    def test_out_of_bounds_index(self, dataset: EnviroAtlas) -> None:
         with pytest.raises(
-            IndexError, match=r'query: .* not found in index with bounds:'
+            IndexError, match=r'index: .* not found in dataset with bounds:'
         ):
             dataset[0:0, 0:0, pd.Timestamp.min : pd.Timestamp.min]
 
-    def test_multiple_hits_query(self, dataset: EnviroAtlas) -> None:
+    def test_multiple_hits_index(self, dataset: EnviroAtlas) -> None:
         ds = EnviroAtlas(
             root=dataset.root,
             splits=['pittsburgh_pa-2010_1m-train', 'austin_tx-2012_1m-test'],
             layers=dataset.layers,
         )
         with pytest.raises(
-            IndexError, match=r'query: .* spans multiple tiles which is not valid'
+            IndexError, match=r'index: .* spans multiple tiles which is not valid'
         ):
             ds[dataset.bounds]
 
