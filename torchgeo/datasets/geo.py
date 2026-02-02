@@ -464,12 +464,18 @@ class RasterDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
-        vrt = None
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
+                vrt = None
                 try:
                     vrt = self._load_warp_file(filepath=filepath, crs=crs)
+                    # See if file has a color map
+                    if len(self.cmap) == 0:
+                        try:
+                            self.cmap = vrt.colormap(1)  # type: ignore[misc]
+                        except ValueError:
+                            pass
                     if crs is None:
                         crs = vrt.crs
                     geometries.append(shapely.box(*vrt.bounds))
@@ -678,13 +684,6 @@ class RasterDataset(GeoDataset):
         transform, width, height = rasterio.warp.calculate_default_transform(
             src.crs, self.crs, src.width, src.height, left, bottom, right, top
         )
-
-        # See if file has a color map
-        if len(self.cmap) == 0:
-            try:
-                self.cmap = src.colormap(1)  # type: ignore[misc]
-            except ValueError:
-                pass
 
         # Only warp if necessary
         if src.crs != crs or src.transform != transform:
