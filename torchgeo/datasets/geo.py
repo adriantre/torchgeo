@@ -30,6 +30,7 @@ from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
 from rasterio.io import DatasetReader
+from rasterio.transform import Affine, array_bounds, from_gcps
 from rasterio.vrt import WarpedVRT
 from torch import Tensor
 from torch.utils.data import Dataset
@@ -687,39 +688,100 @@ class RasterDataset(GeoDataset):
     def _load_warp_file(self, filepath: Path, crs: CRS | None = None) -> DatasetReader:
         """Load and warp a file to the correct CRS and resolution.
 
+        If the dataset has no CRS/transform but has 4 corner GCPs, we derive an affine
+        transform from the GCPs and override src_crs/src_transform in WarpedVRT.
+
         Args:
             filepath: file to load and warp
             crs: Optionally specify which CRS to reproject to. This is used in __init__
-                as self.index.crs is not defined at this point.
+                where self.index.crs is not defined at this point.
 
         Returns:
             file handle of warped VRT
         """
         src = rasterio.open(filepath)
 
+        # 1) Determine "effective" source CRS/transform (native if present; else from GCPs)
+        if (
+            src.crs is not None
+            and src.transform is not None
+            and not src.transform.is_identity
+        ):
+            eff_src_crs = src.crs
+            eff_src_transform = src.transform
+            width, height = src.width, src.height
+        else:
+            eff_src_crs, eff_src_transform, width, height = self._compute_transform(src)
+
         if crs is None:
             try:
                 crs = self.crs
             except AttributeError:
-                crs = src.crs
+                crs = eff_src_crs
+                if crs is None or not crs.is_projected:
+                    crs = CRS.from_epsg(4326)
 
-        left = min(src.bounds.left, src.bounds.right)
-        bottom = min(src.bounds.bottom, src.bounds.top)
-        right = max(src.bounds.left, src.bounds.right)
-        top = max(src.bounds.bottom, src.bounds.top)
-        transform, width, height = rasterio.warp.calculate_default_transform(
-            src.crs, crs, src.width, src.height, left, bottom, right, top
+        # 2) Compute bounds from the effective transform (do NOT use src.bounds here)
+        left, bottom, right, top = array_bounds(height, width, eff_src_transform)
+
+        # 3) Compute destination grid suggestion
+        dst_transform, dst_width, dst_height = (
+            rasterio.warp.calculate_default_transform(
+                eff_src_crs, crs, width, height, left, bottom, right, top
+            )
         )
 
-        # Only warp if necessary
-        if src.crs != crs or src.transform != transform:
+        # 4) Only build a VRT if we need warping/regridding
+        needs_warp = (eff_src_crs != crs) or (eff_src_transform != dst_transform)
+
+        if needs_warp:
             vrt = WarpedVRT(
-                src, crs=crs, transform=transform, height=height, width=width
+                src,
+                crs=crs,
+                transform=dst_transform,
+                height=dst_height,
+                width=dst_width,
+                src_crs=eff_src_crs,
+                src_transform=eff_src_transform,
             )
             src.close()
             return vrt
         else:
             return src
+
+    def _compute_transform(
+        self, src: DatasetReader
+    ) -> tuple[CRS | None, Affine, int, int]:
+        """Computes transform from Ground Control Points.
+
+        Can be overridden if you want to experiment with e.g.
+        Rational Polynomial Coefficients (RPCs) or Thin Plate Spline (TPS).
+
+        https://rasterio.readthedocs.io/en/latest/topics/georeferencing.html#ground-control-points
+
+        Args:
+            src: file handle of source dataset
+
+        Returns:
+            crs: :term:`coordinate reference system (CRS)` to warp to
+            transform: affine transform from GCPs
+            width: width of the raster in pixels
+            height: height of the raster in pixels
+
+        Raises:
+            ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
+        """
+        gcps, gcp_crs = src.gcps
+        if not gcps or gcp_crs is None:
+            src.close()
+            raise ValueError(
+                f'{src.name}: dataset has no usable affine CRS/transform and no GCP CRS.'
+            )
+
+        crs = gcp_crs
+        transform = from_gcps(gcps)  # affine best-fit to e.g. 4 corner GCPs
+        width, height = src.width, src.height
+        return crs, transform, width, height
 
 
 class XarrayDataset(GeoDataset):
