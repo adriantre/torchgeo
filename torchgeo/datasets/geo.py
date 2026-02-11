@@ -698,6 +698,9 @@ class RasterDataset(GeoDataset):
 
         Returns:
             file handle of warped VRT
+
+        Raises:
+            ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
         """
         src = rasterio.open(filepath)
 
@@ -711,15 +714,21 @@ class RasterDataset(GeoDataset):
             eff_src_transform = src.transform
             width, height = src.width, src.height
         else:
-            eff_src_crs, eff_src_transform, width, height = self._compute_transform(src)
+            try:
+                eff_src_crs, eff_src_transform, width, height = self._compute_transform(
+                    src
+                )
+            except Exception:
+                # Catch any exception to ensure src is closed
+                # as user can override self._compute_transform()
+                src.close()
+                raise
 
         if crs is None:
             try:
                 crs = self.crs
             except AttributeError:
-                crs = eff_src_crs
-                if crs is None or not crs.is_projected:
-                    crs = CRS.from_epsg(4326)
+                crs = eff_src_crs or CRS.from_epsg(4326)
 
         # 2) Compute bounds from the effective transform (do NOT use src.bounds here)
         west, south, east, north = array_bounds(height, width, eff_src_transform)
@@ -779,7 +788,6 @@ class RasterDataset(GeoDataset):
         """
         gcps, gcp_crs = src.gcps
         if not gcps or gcp_crs is None:
-            src.close()
             raise ValueError(
                 f'{src.name}: dataset has no usable affine CRS/transform and no GCP CRS.'
             )
