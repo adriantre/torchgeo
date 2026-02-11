@@ -722,16 +722,22 @@ class RasterDataset(GeoDataset):
                     crs = CRS.from_epsg(4326)
 
         # 2) Compute bounds from the effective transform (do NOT use src.bounds here)
-        left, bottom, right, top = array_bounds(height, width, eff_src_transform)
+        west, south, east, north = array_bounds(height, width, eff_src_transform)
 
-        # 3) Compute destination grid suggestion
+        # 3) Ensure that rasters with unusual orientations are correctly warped
+        left = min(west, east)
+        bottom = min(south, north)
+        right = max(west, east)
+        top = max(south, north)
+
+        # 4) Compute destination grid suggestion
         dst_transform, dst_width, dst_height = (
             rasterio.warp.calculate_default_transform(
                 eff_src_crs, crs, width, height, left, bottom, right, top
             )
         )
 
-        # 4) Only build a VRT if we need warping/regridding
+        # 5) Only build a VRT if we need warping/regridding
         needs_warp = (eff_src_crs != crs) or (eff_src_transform != dst_transform)
 
         if needs_warp:
