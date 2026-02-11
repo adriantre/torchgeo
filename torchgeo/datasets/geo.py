@@ -781,7 +781,7 @@ class RasterDataset(GeoDataset):
             dst_transform: Affine of output grid.
             dst_width: Output width in pixels.
             dst_height: Output height in pixels.
-            needs_warp: True if the src needs to be warped.
+            needs_warp: True if the source needs to be warped.
         """
         # Compute bounds from the effective transform (do NOT use src.bounds here)
         west, south, east, north = array_bounds(height, width, transform)
