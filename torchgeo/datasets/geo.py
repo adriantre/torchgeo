@@ -694,7 +694,7 @@ class RasterDataset(GeoDataset):
         Args:
             filepath: file to load and warp
             crs: Optionally specify which CRS to reproject to. This is used in __init__
-                where self.index.crs is not defined at this point.
+                as self.index.crs is not defined at this point.
 
         Returns:
             file handle of warped VRT
@@ -712,14 +712,14 @@ class RasterDataset(GeoDataset):
         else:
             try:
                 src_crs, src_transform = self._compute_affine_georeferencing(src)
-            except Exception:  # Close if user override throws unexpected exceptions
+            except ValueError:
                 src.close()
                 raise
 
         try:  # Use externally chosen crs
             dst_crs = crs or self.crs
         except AttributeError:
-            dst_crs = src_crs or CRS.from_epsg(4326)
+            dst_crs = src_crs
 
         dst_transform, dst_width, dst_height, needs_warp = (
             self._compute_affine_warp_grid(
@@ -741,9 +741,7 @@ class RasterDataset(GeoDataset):
             return vrt
         return src
 
-    def _compute_affine_georeferencing(
-        self, src: DatasetReader
-    ) -> tuple[CRS | None, Affine]:
+    def _compute_affine_georeferencing(self, src: DatasetReader) -> tuple[CRS, Affine]:
         """Computes transform from Ground Control Points.
 
         Args:
