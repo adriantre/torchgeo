@@ -1,17 +1,20 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """Sentinel datasets."""
 
 import os
+import re
 import warnings
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, ClassVar
+from typing import ClassVar, cast
 
 import matplotlib.pyplot as plt
 import pyproj
 import rasterio
 import shapely
+import shapely.ops
+import shapely.wkt
 import torch
 from matplotlib.figure import Figure
 from pyproj import CRS
@@ -22,19 +25,19 @@ from shapely.ops import transform
 
 from .errors import RGBBandsMissingError
 from .geo import RasterDataset
-from .utils import Path
+from .utils import Path, Sample
 
 
 class Sentinel(RasterDataset):
     """Abstract base class for all Sentinel datasets.
 
-    `Sentinel <https://sentinel.esa.int/web/sentinel/home>`__ is a family of
+    `Sentinel <https://sentinels.copernicus.eu/>`__ is a family of
     satellites launched by the `European Space Agency (ESA) <https://www.esa.int/>`_
     under the `Copernicus Programme <https://www.copernicus.eu/en>`_.
 
     If you use this dataset in your research, please cite it using the following format:
 
-    * https://asf.alaska.edu/datasets/daac/sentinel-1/
+    * https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice
     """
 
 
@@ -49,8 +52,8 @@ class Sentinel1(Sentinel):
 
     Data can be downloaded from:
 
-    * `Copernicus Open Access Hub
-      <https://scihub.copernicus.eu/>`_
+    * `Copernicus Data Space Ecosystem
+      <https://dataspace.copernicus.eu/>`_
     * `Alaska Satellite Facility (ASF) Distributed Active Archive Center (DAAC)
       <https://asf.alaska.edu/>`_
     * `Microsoft's Planetary Computer
@@ -59,16 +62,16 @@ class Sentinel1(Sentinel):
     Product Types:
 
     * `Level-0
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/product-types-processing-levels/level-0>`_:
+      <https://sentiwiki.copernicus.eu/web/s1-products#S1-Products-Level-0-Products>`_:
       Raw (RAW)
     * `Level-1
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/product-types-processing-levels/level-1>`_:
+      <https://sentiwiki.copernicus.eu/web/s1-products#S1-Products-Level-1-Products>`_:
       Single Look Complex (SLC)
     * `Level-1
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/product-types-processing-levels/level-1>`_:
+      <https://sentiwiki.copernicus.eu/web/s1-products#S1-Products-Level-1-Products>`_:
       Ground Range Detected (GRD)
     * `Level-2
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/product-types-processing-levels/level-2>`_:
+      <https://sentiwiki.copernicus.eu/web/s1-products#S1-Products-Level-2-Products>`_:
       Ocean (OCN)
 
     Polarizations:
@@ -81,13 +84,13 @@ class Sentinel1(Sentinel):
     Acquisition Modes:
 
     * `Stripmap (SM)
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/acquisition-modes/stripmap>`_
+      <https://sentiwiki.copernicus.eu/web/s1-mission#S1-Mission-Stripmap>`_
     * `Interferometric Wide (IW) swath
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/acquisition-modes/interferometric-wide-swath>`_
+      <https://sentiwiki.copernicus.eu/web/s1-mission#S1-Mission-Interferometric-Wide-Swath>`_
     * `Extra Wide (EW) swatch
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/acquisition-modes/extra-wide-swath>`_
+      <https://sentiwiki.copernicus.eu/web/s1-mission#S1-Mission-Extra-Wide-Swath>`_
     * `Wave (WV)
-      <https://sentinels.copernicus.eu/en/web/sentinel/user-guides/sentinel-1-sar/acquisition-modes/wave>`_
+      <https://sentiwiki.copernicus.eu/web/s1-mission#S1-Mission-Wave>`_
 
     .. note::
        At the moment, this dataset only supports the GRD product type. Data must be
@@ -128,7 +131,7 @@ class Sentinel1(Sentinel):
     # ssss:       Product ID
     filename_glob = 'S1*{}.*'
     filename_regex = r"""
-        ^S1(?P<mission>[AB])
+        ^S1(?P<mission>[A-D])
         _(?P<mode>SM|IW|EW|WV)
         _(?P<date>\d{8}T\d{6})
         _(?P<polarization>[DS][HV])
@@ -161,8 +164,9 @@ class Sentinel1(Sentinel):
         crs: CRS | None = None,
         res: float | tuple[float, float] = (10, 10),
         bands: Sequence[str] = ['VV', 'VH'],
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
+        time_series: bool = False,
     ) -> None:
         """Initialize a new Dataset instance.
 
@@ -177,10 +181,15 @@ class Sentinel1(Sentinel):
             transforms: a function/transform that takes an input sample
                 and returns a transformed version
             cache: if True, cache file handle to speed up repeated sampling
+            time_series: if True, stack data along the time series dimension
+                [T, C, H, W]. If False, merge data into a [C, H, W] mosaic.
 
         Raises:
             AssertionError: if ``bands`` is invalid
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.9
+           The *time_series* parameter.
 
         .. versionchanged:: 0.5
            *root* was renamed to *paths*.
@@ -205,13 +214,10 @@ To create a dataset containing both, use:
 
         self.filename_glob = self.filename_glob.format(bands[0])
 
-        super().__init__(paths, crs, res, bands, transforms, cache)
+        super().__init__(paths, crs, res, bands, transforms, cache, time_series)
 
     def plot(
-        self,
-        sample: dict[str, Any],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 
@@ -287,7 +293,7 @@ class Sentinel2(Sentinel):
         ^T(?P<tile>\d{{2}}[A-Z]{{3}})
         _(?P<date>\d{{8}}T\d{{6}})
         _(?P<band>B[018][\dA])
-        (?:_(?P<resolution>{}m))?
+        (?:_(?P<resolution>{}))?
         \..*$
     """
     date_format = '%Y%m%dT%H%M%S'
@@ -308,6 +314,24 @@ class Sentinel2(Sentinel):
         'B11',
         'B12',
     )
+
+    # Native resolutions of each band
+    resolutions: ClassVar[dict[str, str]] = {
+        'B01': '60m',
+        'B02': '10m',
+        'B03': '10m',
+        'B04': '10m',
+        'B05': '20m',
+        'B06': '20m',
+        'B07': '20m',
+        'B08': '10m',
+        'B8A': '20m',
+        'B09': '60m',
+        'B10': '60m',
+        'B11': '20m',
+        'B12': '20m',
+    }
+
     rgb_bands = ('B04', 'B03', 'B02')
 
     separate_files = True
@@ -343,10 +367,11 @@ class Sentinel2(Sentinel):
         self,
         paths: Path | Iterable[Path] = 'data',
         crs: CRS | None = None,
-        res: float | tuple[float, float] = 10,
+        res: float | tuple[float, float] | None = 10,
         bands: Sequence[str] | None = None,
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
+        time_series: bool = False,
     ) -> None:
         """Initialize a new Dataset instance.
 
@@ -361,27 +386,50 @@ class Sentinel2(Sentinel):
             transforms: a function/transform that takes an input sample
                 and returns a transformed version
             cache: if True, cache file handle to speed up repeated sampling
+            time_series: if True, stack data along the time series dimension
+                [T, C, H, W]. If False, merge data into a [C, H, W] mosaic.
 
         Raises:
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.9
+           The *time_series* parameter.
 
         .. versionchanged:: 0.5
             *root* was renamed to *paths*
         """
         bands = bands or self.all_bands
         self.filename_glob = self.filename_glob.format(bands[0])
+        self.filename_regex = self.filename_regex.format(self.resolutions[bands[0]])
+        super().__init__(paths, crs, res, bands, transforms, cache, time_series)
 
-        if isinstance(res, int | float):
-            res = (res, res)
+    def _update_filepath(self, band: str, filepath: str) -> str:
+        """Update `filepath` to point to `band`.
 
-        self.filename_regex = self.filename_regex.format(int(res[0]))
-        super().__init__(paths, crs, res, bands, transforms, cache)
+        Args:
+            band: band to search for.
+            filepath: base filepath to use for searching.
+
+        Returns:
+            updated filepath for `band`.
+        """
+        filepath = super()._update_filepath(band, filepath)
+
+        # Sentinel-2 L2A includes resolution in directory and filename
+        directory, filename = os.path.split(filepath)
+        supdir, subdir = os.path.split(directory)
+
+        match = re.match(self.filename_regex, filename, re.VERBOSE)
+        if match and match.group('resolution'):
+            start = match.start('resolution')
+            end = match.end('resolution')
+            filename = filename[:start] + self.resolutions[band] + filename[end:]
+            subdir = 'R' + self.resolutions[band]
+
+        return os.path.join(supdir, subdir, filename)
 
     def plot(
-        self,
-        sample: dict[str, Any],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 
@@ -467,4 +515,4 @@ class Sentinel2(Sentinel):
         transformer = pyproj.Transformer.from_crs(
             pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
         ).transform
-        return transform(transformer, true_footprint)
+        return cast(MultiPolygon | Polygon, transform(transformer, true_footprint))
