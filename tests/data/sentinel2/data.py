@@ -8,9 +8,9 @@ import os
 import numpy as np
 import pyproj
 import rasterio
-import shapely
 from rasterio import Affine
 from rasterio.crs import CRS
+from shapely.geometry import Polygon
 from shapely.ops import transform
 
 SIZE = 128
@@ -179,34 +179,57 @@ def get_product_root(raster_path: str) -> str:
     return raster_path.split('GRANULE')[0]
 
 
+# These three helpers describe the same nodata geometry from two perspectives:
+# the raster (pixel mask) and the vector (footprint polygon). Keep them in sync.
+
+
+def _nodata_cutoff(height: int, width: int) -> int:
+    """Diagonal cutoff for the upper-left nodata triangle: row + col < cutoff."""
+    return min(height, width) // 2
+
+
+def _apply_nodata_triangle(
+    z: np.ndarray,
+    nodata_value: float,  # type: ignore[type-arg]
+) -> None:
+    """Fill the upper-left triangle of z with nodata_value in-place."""
+    height, width = z.shape
+    rows, cols = np.ogrid[:height, :width]
+    z[rows + cols < _nodata_cutoff(height, width)] = nodata_value
+
+
+def _nodata_footprint_polygon(t: Affine, width: int, height: int) -> Polygon:
+    """Return the valid-data pentagon in the raster's native CRS."""
+    cutoff = _nodata_cutoff(height, width)
+    return Polygon(
+        [
+            t * (cutoff, 0),  # top edge where diagonal starts
+            t * (width, 0),  # top-right
+            t * (width, height),  # bottom-right
+            t * (0, height),  # bottom-left
+            t * (0, cutoff),  # left edge where diagonal ends
+        ]
+    )
+
+
 def create_metadata_file(raster_path: str) -> None:
     product_root = get_product_root(raster_path)
     metadata_path = os.path.join(product_root, 'MTD_MSIL1C.xml')
 
-    # Calculate the actual valid footprint based on pixel values
-    # by specifying nodata value. This will be stored in the metadata file.
     with rasterio.open(raster_path) as src:
         source_crs = src.crs
-        valid_data_footprint = shapely.box(*src.bounds)
-        # TODO: Swap to the following when get_valid_footprint_from_datasource exists
-        # with WarpedVRT(src, nodata=0) as vrt:
-        #     valid_data_footprint = shapely.convex_hull(
-        #         get_valid_footprint_from_datasource(vrt)
-        #     )
+        t = src.transform
+        w, h = src.width, src.height
 
-    # .SAFE format always stores valid data footprint in WGS84
-    target_crs = CRS.from_epsg(4326)
+    valid_footprint = _nodata_footprint_polygon(t, w, h)
 
+    # .SAFE format always stores the valid footprint in WGS84
     project = pyproj.Transformer.from_crs(
-        source_crs, target_crs, always_xy=True
+        source_crs, CRS.from_epsg(4326), always_xy=True
     ).transform
+    footprint_wgs84 = transform(project, valid_footprint)
 
-    # Reproject polygon
-    footprint_wgs84 = transform(project, valid_data_footprint)
-    # Format for the xml file
     coords = ' '.join(f'{lat} {lon}' for lon, lat in footprint_wgs84.exterior.coords)
-
-    # Fill in the template with the actual valid data footprint
     xml_content = xml_template.format(coords=coords)
 
     with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -244,14 +267,8 @@ def create_file(
         )
 
     if nodata_value is not None:
-        # Define a triangle in the upper left corner of the raster
-        #  having nodata value. This simulates Sentinel2 acquisitions
-        #  not fully covering the MGRS cell which is the extent
-        #  the raster is clipped to by ESA.
-        rows, cols = np.ogrid[:raster_height, :raster_width]
-        cutoff = min(raster_height, raster_width) // 2
-        mask = rows + cols < cutoff
-        Z[mask] = nodata_value
+        # Simulates Sentinel-2 acquisitions not fully covering the MGRS cell.
+        _apply_nodata_triangle(Z, nodata_value)
 
     with rasterio.open(path, 'w', **profile) as src:
         for i in range(1, profile['count'] + 1):
@@ -270,8 +287,7 @@ def create_directory(directory: str, hierarchy: FILENAME_HIERARCHY) -> None:
         prev_root = None
         for value in hierarchy:
             path = os.path.join(directory, value)
-            # Set nodata_value=0 when get_valid_footprint_from_datasource method exist
-            create_file(path, dtype='uint16', num_channels=1, nodata_value=None)
+            create_file(path, dtype='uint16', num_channels=1, nodata_value=0)
             # Create the metadata file once for each product
             if (curr_root := get_product_root(path)) != prev_root:
                 create_metadata_file(path)
