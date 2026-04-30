@@ -198,7 +198,7 @@ def _apply_nodata_triangle(
     z[rows + cols < _nodata_cutoff(height, width)] = nodata_value
 
 
-def _nodata_footprint_polygon(t: Affine, width: int, height: int) -> Polygon:
+def _footprint_excluding_nodata_triangle(t: Affine, width: int, height: int) -> Polygon:
     """Return the valid-data pentagon in the raster's native CRS."""
     cutoff = _nodata_cutoff(height, width)
     return Polygon(
@@ -221,7 +221,7 @@ def create_metadata_file(raster_path: str) -> None:
         t = src.transform
         w, h = src.width, src.height
 
-    valid_footprint = _nodata_footprint_polygon(t, w, h)
+    valid_footprint = _footprint_excluding_nodata_triangle(t, w, h)
 
     # .SAFE format always stores the valid footprint in WGS84
     project = pyproj.Transformer.from_crs(
