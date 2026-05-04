@@ -169,18 +169,20 @@ class TestSentinel2:
         Sentinel2(dataset.paths, res=10.0, bands=dataset.bands)
 
     @pytest.mark.parametrize('dataset_type', [DatasetReader, WarpedVRT])
+    @pytest.mark.parametrize('has_footprint', [True, False])
     def test_footprint_from_datasource_metadata_file(
         self,
         dataset: Sentinel2,
         monkeypatch: pytest.MonkeyPatch,
         dataset_type: type[DatasetReader] | type[WarpedVRT],
+        has_footprint_tag: bool,
     ) -> None:
         footprint_wkt = dataset.index.geometry.to_crs(4326).values[0].wkt
         filepath = next(iter(dataset.files))
 
         class FakeMetadataSrc:
             def tags(self) -> dict[str, str]:
-                return {'FOOTPRINT': footprint_wkt}
+                return {'FOOTPRINT': footprint_wkt} if has_footprint_tag else {}
 
             def __enter__(self) -> 'FakeMetadataSrc':
                 return self
@@ -193,6 +195,7 @@ class TestSentinel2:
         src_dataset: DatasetReader | WarpedVRT = (
             WarpedVRT(real_src) if dataset_type is WarpedVRT else real_src
         )
+        bounds = src_dataset.bounds
 
         monkeypatch.setattr(rasterio, 'open', lambda _: FakeMetadataSrc())
         monkeypatch.setattr(os.path, 'exists', lambda _: True)
@@ -203,10 +206,14 @@ class TestSentinel2:
             src_dataset.close()
         real_src.close()
 
-        transformer = pyproj.Transformer.from_crs(
-            pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
-        ).transform
-        expected = shapely.ops.transform(transformer, shapely.wkt.loads(footprint_wkt))
-
-        assert isinstance(result, Polygon)
-        assert result.equals_exact(expected, tolerance=1e-9)
+        if has_footprint_tag:
+            transformer = pyproj.Transformer.from_crs(
+                pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
+            ).transform
+            expected = shapely.ops.transform(
+                transformer, shapely.wkt.loads(footprint_wkt)
+            )
+            assert isinstance(result, Polygon)
+            assert result.equals_exact(expected, tolerance=1e-9)
+        else:
+            assert result.equals_exact(shapely.box(*bounds), tolerance=1e-9)  # type: ignore[arg-type]
