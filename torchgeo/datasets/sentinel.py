@@ -492,8 +492,6 @@ class Sentinel2(Sentinel):
             the dataset's CRS.
 
         Raises:
-            KeyError: If the existing metadata file does not contain a ``FOOTPRINT`` tag.
-
         .. versionadded:: 0.9
         """
         if hasattr(dataset, 'src_dataset'):
@@ -503,10 +501,12 @@ class Sentinel2(Sentinel):
             filepath = dataset.name
         metadata_path = filepath.split('GRANULE')[0] + 'MTD_MSIL1C.xml'
         if not os.path.exists(metadata_path):
-            # Use default calculation when metadata file not available
             return super()._footprint_from_datasource(dataset)
         with rasterio.open(metadata_path) as metadata_src:
-            true_footprint = shapely.wkt.loads(metadata_src.tags()['FOOTPRINT'])
+            tags = metadata_src.tags()
+        if 'FOOTPRINT' not in tags:
+            return super()._footprint_from_datasource(dataset)
+        true_footprint = shapely.wkt.loads(tags['FOOTPRINT'])
         transformer = pyproj.Transformer.from_crs(
             pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
         ).transform
