@@ -394,7 +394,7 @@ class RasterDataset(GeoDataset):
 
     #: Nodata value used in the raster for pixels outside the satellite acquisition
     #: Optionally set this if the raster lack nodata-mask and nodata value
-    #: and you want need it to override `RasterDataset._footprint_from_datasource()`
+    #: and you need it to override `RasterDataset._footprint_from_datasource()`
     nodata_value: float | None = None
 
     @property
@@ -736,6 +736,8 @@ class RasterDataset(GeoDataset):
         )
 
         if needs_warp:
+            # Only override nodata if specified
+            nodata = {} if self.nodata_value is None else {'nodata': self.nodata_value}
             vrt = WarpedVRT(
                 src,
                 crs=dst_crs,
@@ -744,6 +746,7 @@ class RasterDataset(GeoDataset):
                 width=dst_width,
                 src_crs=src_crs,
                 src_transform=src_transform,
+                **nodata,
             )
             src.close()
             return vrt
@@ -811,6 +814,29 @@ class RasterDataset(GeoDataset):
         )
 
         return dst_transform, dst_width, dst_height, needs_warp
+
+    def _footprint_from_datasource(
+        self, dataset: DatasetReader | WarpedVRT
+    ) -> MultiPolygon | Polygon:
+        """Compute the spatial footprint of the dataset from a file handle.
+
+        Called during indexing for each file in the dataset.
+        Override this in subclasses to compute a more precise footprint than
+        just the raster bounds (e.g. by reading a metadata file or by using
+        :func:`~torchgeo.datasets.utils.get_valid_footprint_from_datasource`).
+
+        Args:
+            dataset: An open raster dataset, either a :class:`rasterio.io.DatasetReader`
+                or a :class:`rasterio.vrt.WarpedVRT`.
+
+        Returns:
+            A :class:`shapely.geometry.Polygon` or
+            :class:`shapely.geometry.MultiPolygon` representing the footprint
+            in the dataset's CRS.
+
+        .. versionadded:: 0.9
+        """
+        return shapely.box(*dataset.bounds)
 
 
 class XarrayDataset(GeoDataset):
@@ -983,11 +1009,6 @@ class XarrayDataset(GeoDataset):
                 tensors.append(array_to_tensor(dataset[var].values))
 
         return torch.stack(tensors)
-
-    def _footprint_from_datasource(
-        self, src: DatasetReader | WarpedVRT
-    ) -> MultiPolygon | Polygon:
-        return shapely.box(*src.bounds)
 
 
 class VectorDataset(GeoDataset):

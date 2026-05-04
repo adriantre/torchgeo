@@ -3,12 +3,12 @@
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import pyproj
 import pytest
+import rasterio
 import shapely
 import shapely.ops
 import shapely.wkt
@@ -168,35 +168,45 @@ class TestSentinel2:
     def test_float_res(self, dataset: Sentinel2) -> None:
         Sentinel2(dataset.paths, res=10.0, bands=dataset.bands)
 
-    @pytest.mark.parametrize('dataset_spec', [DatasetReader, WarpedVRT])
+    @pytest.mark.parametrize('dataset_type', [DatasetReader, WarpedVRT])
     def test_footprint_from_datasource_metadata_file(
-        self, dataset: Sentinel2, dataset_spec: type[DatasetReader] | type[WarpedVRT]
+        self,
+        dataset: Sentinel2,
+        monkeypatch: pytest.MonkeyPatch,
+        dataset_type: type[DatasetReader] | type[WarpedVRT],
     ) -> None:
-        # WKT in EPSG:4326
-        metadata_footprint_wkt = dataset.index.geometry.to_crs(4326).values[0].wkt
-        footprint_wgs84 = shapely.wkt.loads(metadata_footprint_wkt)
+        footprint_wkt = dataset.index.geometry.to_crs(4326).values[0].wkt
+        filepath = next(iter(dataset.files))
 
-        # Fake dataset
-        fake_dataset = MagicMock(spec=dataset_spec)
-        fake_dataset.name = '/fake/path/GRANULE/L1C_data'
-        fake_dataset.crs = dataset.crs
+        class FakeMetadataSrc:
+            def tags(self) -> dict[str, str]:
+                return {'FOOTPRINT': footprint_wkt}
 
-        # Mock rasterio.open to return metadata with the WKT
-        mock_metadata_src = MagicMock()
-        mock_metadata_src.tags.return_value = {'FOOTPRINT': metadata_footprint_wkt}
-        mock_metadata_src.__enter__.return_value = mock_metadata_src
+            def __enter__(self) -> 'FakeMetadataSrc':
+                return self
 
-        with (
-            patch('os.path.exists', return_value=True),
-            patch('rasterio.open', return_value=mock_metadata_src),
-        ):
-            result = dataset._footprint_from_datasource(fake_dataset)
+            def __exit__(self, *args: object) -> None:
+                pass
 
-        # Transform the EPSG:4326 geom to the instance CRS for expected comparison
+        # Open the real band file before patching rasterio.open
+        real_src = rasterio.open(filepath)
+        src_dataset: DatasetReader | WarpedVRT = (
+            WarpedVRT(real_src) if dataset_type is WarpedVRT else real_src
+        )
+
+        monkeypatch.setattr(rasterio, 'open', lambda _: FakeMetadataSrc())
+        monkeypatch.setattr(os.path, 'exists', lambda _: True)
+
+        result = dataset._footprint_from_datasource(src_dataset)
+
+        if isinstance(src_dataset, WarpedVRT):
+            src_dataset.close()
+        real_src.close()
+
         transformer = pyproj.Transformer.from_crs(
             pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
         ).transform
-        expected_geom = shapely.ops.transform(transformer, footprint_wgs84)
+        expected = shapely.ops.transform(transformer, shapely.wkt.loads(footprint_wkt))
 
         assert isinstance(result, Polygon)
-        assert result.equals_exact(expected_geom, tolerance=1e-9)
+        assert result.equals_exact(expected, tolerance=1e-9)

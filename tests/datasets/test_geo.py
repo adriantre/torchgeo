@@ -8,7 +8,6 @@ import pickle
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -18,10 +17,8 @@ import torch.nn as nn
 from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
-from rasterio import DatasetReader
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
-from shapely import MultiPolygon, Polygon
 from torch import Tensor
 from torch.utils.data import ConcatDataset
 
@@ -38,11 +35,7 @@ from torchgeo.datasets import (
     VectorDataset,
     XarrayDataset,
 )
-from torchgeo.datasets.utils import (
-    GeoSlice,
-    Sample,
-    get_valid_footprint_from_datasource,
-)
+from torchgeo.datasets.utils import GeoSlice, Sample
 
 MINT = pd.Timestamp(2025, 4, 24)
 MAXT = pd.Timestamp(2025, 4, 25)
@@ -109,15 +102,6 @@ class CustomVectorParquetDataset(VectorDataset):
 class CustomSentinelDataset(Sentinel2):
     all_bands: tuple[str, ...] = ()
     separate_files = False
-
-
-class CustomSentinelDatasetComputeValidFootprint(Sentinel2):
-    nodata_value = 0.0
-
-    def _footprint_from_datasource(
-        self, dataset: DatasetReader | WarpedVRT
-    ) -> MultiPolygon | Polygon:
-        return get_valid_footprint_from_datasource(dataset)
 
 
 class CustomNonGeoDataset(NonGeoDataset):
@@ -519,25 +503,24 @@ class TestRasterDataset:
         assert ds.res == (10.0, 10.0)
         ds.res = 20.0
 
-    def test_nodata_value_is_passed_on(self) -> None:
-        root = os.path.join('tests', 'data', 'raster', 'res_2-2_epsg_32631')
+    def test_nodata_value_is_passed_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        wvrt_kwargs: list[dict[str, object]] = []
+        original_wvrt = WarpedVRT
 
-        RasterDatasetNodata = RasterDataset
-        RasterDatasetNodata.nodata_value = 0.0
+        def spy_wvrt(src: object, **kwargs: object) -> WarpedVRT:
+            wvrt_kwargs.append(dict(kwargs))
+            return original_wvrt(src, **kwargs)  # type: ignore[call-arg]
 
-        # For RasterDataset, the bounds are forming the "valid footprint" even
-        # when setting nodata != None
-        mock_vrt = MagicMock(spec=WarpedVRT)
-        mock_vrt.__enter__.return_value.bounds = (0, 0, 10, 10)
+        monkeypatch.setattr('torchgeo.datasets.geo.WarpedVRT', spy_wvrt)
 
-        with patch(
-            'torchgeo.datasets.geo.WarpedVRT', return_value=mock_vrt
-        ) as mock_wvrt:
-            _ = RasterDataset(root)
+        class Sentinel2WithNodata(Sentinel2):
+            nodata_value: float | None = 0.0
 
-            # Assert WarpedVRT was called with nodata in options
-            _, kwargs = mock_wvrt.call_args
-            assert kwargs['nodata'] == 0.0
+        root = os.path.join('tests', 'data', 'sentinel2')
+        Sentinel2WithNodata(root, crs=CRS.from_epsg(4326), res=(0.0001, 0.0001))
+
+        assert len(wvrt_kwargs) > 0
+        assert all(k.get('nodata') == 0.0 for k in wvrt_kwargs)
 
     @pytest.mark.parametrize('x,y', [(-2, 2), (2, -2), (-2, -2)])
     def test_malformed_res(self, x: int, y: int) -> None:

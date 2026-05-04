@@ -5,7 +5,6 @@
 
 import os
 import re
-import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import ClassVar, cast
 
@@ -495,7 +494,7 @@ class Sentinel2(Sentinel):
         Raises:
             KeyError: If the existing metadata file does not contain a ``FOOTPRINT`` tag.
 
-        .. versionadded:: 0.8
+        .. versionadded:: 0.9
         """
         if hasattr(dataset, 'src_dataset'):
             # When dataset is a WarpedVRT
@@ -504,11 +503,7 @@ class Sentinel2(Sentinel):
             filepath = dataset.name
         metadata_path = filepath.split('GRANULE')[0] + 'MTD_MSIL1C.xml'
         if not os.path.exists(metadata_path):
-            warnings.warn(
-                f'Metadata file not found in Sentinel-2 path: {metadata_path}. '
-                'This is required to extract true footprint for this dataset.'
-                'Defaulting to using raster bounds.'
-            )
+            # Use default calculation when metadata file not available
             return super()._footprint_from_datasource(dataset)
         with rasterio.open(metadata_path) as metadata_src:
             true_footprint = shapely.wkt.loads(metadata_src.tags()['FOOTPRINT'])
