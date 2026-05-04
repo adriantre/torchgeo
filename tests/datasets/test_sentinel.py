@@ -168,13 +168,19 @@ class TestSentinel2:
     def test_float_res(self, dataset: Sentinel2) -> None:
         Sentinel2(dataset.paths, res=10.0, bands=dataset.bands)
 
-    @pytest.mark.parametrize('dataset_type', [DatasetReader, WarpedVRT])
-    @pytest.mark.parametrize('has_footprint', [True, False])
-    def test_footprint_from_datasource_metadata_file(
+    @pytest.mark.parametrize(
+        'dataset_type', [DatasetReader, WarpedVRT]
+    )  # WarpedVRT is produced when CRS requires reprojection
+    @pytest.mark.parametrize(
+        'metadata_exists,has_footprint_tag',
+        [(True, True), (True, False), (False, False)],
+    )
+    def test_footprint_from_datasource(
         self,
         dataset: Sentinel2,
         monkeypatch: pytest.MonkeyPatch,
         dataset_type: type[DatasetReader] | type[WarpedVRT],
+        metadata_exists: bool,
         has_footprint_tag: bool,
     ) -> None:
         footprint_wkt = dataset.index.geometry.to_crs(4326).values[0].wkt
@@ -190,7 +196,6 @@ class TestSentinel2:
             def __exit__(self, *args: object) -> None:
                 pass
 
-        # Open the real band file before patching rasterio.open
         real_src = rasterio.open(filepath)
         src_dataset: DatasetReader | WarpedVRT = (
             WarpedVRT(real_src) if dataset_type is WarpedVRT else real_src
@@ -198,7 +203,7 @@ class TestSentinel2:
         bounds = src_dataset.bounds
 
         monkeypatch.setattr(rasterio, 'open', lambda _: FakeMetadataSrc())
-        monkeypatch.setattr(os.path, 'exists', lambda _: True)
+        monkeypatch.setattr(os.path, 'exists', lambda _: metadata_exists)
 
         result = dataset._footprint_from_datasource(src_dataset)
 
