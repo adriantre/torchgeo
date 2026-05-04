@@ -10,6 +10,7 @@ import pyproj
 import rasterio
 from rasterio import Affine
 from rasterio.crs import CRS
+from rasterio.features import rasterize
 from shapely.geometry import Polygon
 from shapely.ops import transform
 
@@ -179,40 +180,13 @@ def get_product_root(raster_path: str) -> str:
     return raster_path.split('GRANULE')[0]
 
 
-# These three helpers describe the same nodata geometry from two perspectives:
-# the raster (pixel mask) and the vector (footprint polygon). Keep them in sync.
+def _nodata_corner(t: Affine, height: int, width: int) -> Polygon:
+    """Return the upper-left triangle containing nodata pixels in the raster's native CRS."""
+    cutoff = min(height, width) // 2
+    return Polygon([t * (0, 0), t * (cutoff, 0), t * (0, cutoff)])
 
 
-def _nodata_cutoff(height: int, width: int) -> int:
-    """Diagonal cutoff for the upper-left nodata triangle: row + col < cutoff."""
-    return min(height, width) // 2
-
-
-def _apply_nodata_triangle(
-    z: np.ndarray,
-    nodata_value: float,  # type: ignore[type-arg]
-) -> None:
-    """Fill the upper-left triangle of z with nodata_value in-place."""
-    height, width = z.shape
-    rows, cols = np.ogrid[:height, :width]
-    z[rows + cols < _nodata_cutoff(height, width)] = nodata_value
-
-
-def _footprint_excluding_nodata_triangle(t: Affine, width: int, height: int) -> Polygon:
-    """Return the valid-data pentagon in the raster's native CRS."""
-    cutoff = _nodata_cutoff(height, width)
-    return Polygon(
-        [
-            t * (cutoff, 0),  # top edge where diagonal starts
-            t * (width, 0),  # top-right
-            t * (width, height),  # bottom-right
-            t * (0, height),  # bottom-left
-            t * (0, cutoff),  # left edge where diagonal ends
-        ]
-    )
-
-
-def create_metadata_file(raster_path: str) -> None:
+def create_metadata_file(raster_path: str, nodata_value: float | None) -> None:
     product_root = get_product_root(raster_path)
     metadata_path = os.path.join(product_root, 'MTD_MSIL1C.xml')
 
@@ -221,7 +195,12 @@ def create_metadata_file(raster_path: str) -> None:
         t = src.transform
         w, h = src.width, src.height
 
-    valid_footprint = _footprint_excluding_nodata_triangle(t, w, h)
+    bounds = Polygon([t * (0, 0), t * (w, 0), t * (w, h), t * (0, h)])
+    valid_footprint = (
+        bounds.difference(_nodata_corner(t, h, w))
+        if nodata_value is not None
+        else bounds
+    )
 
     # .SAFE format always stores the valid footprint in WGS84
     project = pyproj.Transformer.from_crs(
@@ -268,7 +247,10 @@ def create_file(
 
     if nodata_value is not None:
         # Simulates Sentinel-2 acquisitions not fully covering the MGRS cell.
-        _apply_nodata_triangle(Z, nodata_value)
+        t = profile['transform']
+        corner = _nodata_corner(t, raster_height, raster_width)
+        mask = rasterize([corner], out_shape=(raster_height, raster_width), transform=t)
+        Z[mask == 1] = nodata_value
 
     with rasterio.open(path, 'w', **profile) as src:
         for i in range(1, profile['count'] + 1):
@@ -287,10 +269,11 @@ def create_directory(directory: str, hierarchy: FILENAME_HIERARCHY) -> None:
         prev_root = None
         for value in hierarchy:
             path = os.path.join(directory, value)
-            create_file(path, dtype='uint16', num_channels=1, nodata_value=0)
+            nodata_value = 0
+            create_file(path, dtype='uint16', num_channels=1, nodata_value=nodata_value)
             # Create the metadata file once for each product
             if (curr_root := get_product_root(path)) != prev_root:
-                create_metadata_file(path)
+                create_metadata_file(path, nodata_value)
                 prev_root = curr_root
 
 

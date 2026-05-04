@@ -265,7 +265,6 @@ include = ["torchgeo*"]
 deprecated = "ignore"
 unresolved-attribute = "ignore"
 unresolved-import = "ignore"
-unused-ignore-comment = "ignore"
 
 [tool.ty.src]
 include = ["torchgeo", "tests"]
