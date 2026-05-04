@@ -392,9 +392,7 @@ class RasterDataset(GeoDataset):
     #: Color map for the dataset, used for plotting
     cmap: ClassVar[dict[int, tuple[int, int, int, int]]] = {}
 
-    #: Nodata value used in the raster for pixels outside the satellite acquisition
-    #: Optionally set this if the raster lack nodata-mask and nodata value
-    #: and you need it to override `RasterDataset._footprint_from_datasource()`
+    #: Nodata value for pixels outside the acquisition footprint; overrides raster nodata.
     nodata_value: float | None = None
 
     @property

@@ -491,7 +491,6 @@ class Sentinel2(Sentinel):
             :class:`shapely.geometry.MultiPolygon` representing the footprint in
             the dataset's CRS.
 
-        Raises:
         .. versionadded:: 0.9
         """
         if hasattr(dataset, 'src_dataset'):
