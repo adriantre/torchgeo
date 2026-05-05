@@ -15,111 +15,87 @@ jobs:
   latest:
     name: latest
     runs-on: ${{ matrix.os }}
-    env:
-      MPLBACKEND: Agg
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ['3.12', '3.13', '3.14', '3.14t']
     steps:
       - name: Clone repo
-        uses: actions/checkout@v4.1.7
-      - name: Set up python
-        uses: actions/setup-python@v5.2.0
+        uses: actions/checkout@v6.0.2
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Cache dependencies
-        uses: actions/cache@v4.0.2
-        id: cache
-        with:
-          path: ${{ env.pythonLocation }}
-          key: ${{ env.pythonLocation }}-${{ hashFiles('requirements/required.txt') }}-${{ hashFiles('requirements/datasets.txt') }}-${{ hashFiles('requirements/tests.txt') }}
-        if: ${{ runner.os != 'macOS' }}
-      - name: Setup headless display for pyvista
-        uses: pyvista/setup-headless-display-action@v2
-      - name: Install pip dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
+          enable-cache: true
+          activate-environment: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install dependencies
+        run: uv sync --locked --extra datasets --extra models --extra tests
+      - name: List installed dependencies
+        run: uv pip list
+      - name: Run checks
         run: |
-          pip install -r requirements/required.txt -r requirements/datasets.txt -r requirements/tests.txt
-          pip cache purge
-      - name: List pip dependencies
-        run: pip list
-      - name: Run pytest checks
-        run: |
-          pytest --cov=torchgeo --cov-report=xml --durations=10
-          python3 -m torchgeo --help
+          pytest --cov=torchgeo --cov-report=xml
+          python -m torchgeo --help
       - name: Report coverage
-        uses: codecov/codecov-action@v4.5.0
+        uses: codecov/codecov-action@v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
   minimum:
     name: minimum
     runs-on: ubuntu-latest
-    env:
-      MPLBACKEND: Agg
     steps:
       - name: Clone repo
-        uses: actions/checkout@v4.1.7
-      - name: Set up python
-        uses: actions/setup-python@v5.2.0
+        uses: actions/checkout@v6.0.2
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
-          python-version: "3.10"
-      - name: Cache dependencies
-        uses: actions/cache@v4.0.2
-        id: cache
-        with:
-          path: ${{ env.pythonLocation }}
-          key: ${{ env.pythonLocation }}-${{ hashFiles('requirements/min-reqs.old') }}
-      - name: Setup headless display for pyvista
-        uses: pyvista/setup-headless-display-action@v2
-      - name: Install pip dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
+          python-version: '3.12'
+          enable-cache: true
+          activate-environment: true
+          cache-dependency-glob: |
+            pyproject.toml
+      - name: Install dependencies
+        run: uv pip install --resolution lowest-direct '.[datasets,models,tests]'
+      - name: List installed dependencies
+        run: uv pip list
+      - name: Run checks
         run: |
-          pip install -r requirements/min-reqs.old
-          pip cache purge
-      - name: List pip dependencies
-        run: pip list
-      - name: Run pytest checks
-        run: |
-          pytest --cov=torchgeo --cov-report=xml --durations=10
-          python3 -m torchgeo --help
+          pytest --cov=torchgeo --cov-report=xml
+          python -m torchgeo --help
       - name: Report coverage
-        uses: codecov/codecov-action@v4.5.0
+        uses: codecov/codecov-action@v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-  datasets:
-    name: datasets
+  optional:
+    name: optional
     runs-on: ubuntu-latest
-    env:
-      MPLBACKEND: Agg
     steps:
       - name: Clone repo
-        uses: actions/checkout@v4.1.7
-      - name: Set up python
-        uses: actions/setup-python@v5.2.0
+        uses: actions/checkout@v6.0.2
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
-          python-version: "3.12"
-      - name: Cache dependencies
-        uses: actions/cache@v4.0.2
-        id: cache
-        with:
-          path: ${{ env.pythonLocation }}
-          key: ${{ env.pythonLocation }}-${{ hashFiles('requirements/required.txt') }}-${{ hashFiles('requirements/tests.txt') }}
-      - name: Install pip dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
+          python-version: '3.14'
+          enable-cache: true
+          activate-environment: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install dependencies
+        run: uv sync --locked --extra tests
+      - name: List installed dependencies
+        run: uv pip list
+      - name: Run checks
         run: |
-          pip install -r requirements/required.txt -r requirements/tests.txt
-          pip cache purge
-      - name: List pip dependencies
-        run: pip list
-      - name: Run pytest checks
-        run: |
-          pytest --cov=torchgeo --cov-report=xml --durations=10
-          python3 -m torchgeo --help
+          pytest --cov=torchgeo --cov-report=xml
+          python -m torchgeo --help
       - name: Report coverage
-        uses: codecov/codecov-action@v4.5.0
+        uses: codecov/codecov-action@v6.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.label || github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}

@@ -1,17 +1,17 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """Common datamodule utilities."""
 
 import math
-from collections.abc import Callable, Iterable
-from typing import Any
+from collections.abc import Iterable
+from typing import NotRequired, TypedDict
 
 import numpy as np
 import torch
-from einops import rearrange
 from torch import Tensor
-from torch.nn import Module
+
+from ..datasets.utils import Sample
 
 
 # Based on lightning_lite.utilities.exceptions
@@ -19,88 +19,44 @@ class MisconfigurationException(Exception):
     """Exception used to inform users of misuse with Lightning."""
 
 
-class AugPipe(Module):
-    """Pipeline for applying augmentations sequentially on select data keys.
+class DetectionSample(TypedDict):
+    """Sample for object detection and instance segmentation."""
 
-    .. versionadded:: 0.6
-    """
-
-    def __init__(
-        self, augs: Callable[[dict[str, Any]], dict[str, Any]], batch_size: int
-    ) -> None:
-        """Initialize a new AugPipe instance.
-
-        Args:
-            augs: Augmentations to apply.
-            batch_size: Batch size
-        """
-        super().__init__()
-        self.augs = augs
-        self.batch_size = batch_size
-
-    def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Apply the augmentation.
-
-        Args:
-            batch: Input batch.
-
-        Returns:
-            Augmented batch.
-        """
-        batch_len = len(batch['image'])
-        for bs in range(batch_len):
-            batch_dict = {
-                'image': batch['image'][bs],
-                'labels': batch['labels'][bs],
-                'boxes': batch['boxes'][bs],
-            }
-
-            if 'masks' in batch:
-                batch_dict['masks'] = batch['masks'][bs]
-
-            batch_dict = self.augs(batch_dict)
-
-            batch['image'][bs] = batch_dict['image']
-            batch['labels'][bs] = batch_dict['labels']
-            batch['boxes'][bs] = batch_dict['boxes']
-
-            if 'masks' in batch:
-                batch['masks'][bs] = batch_dict['masks']
-
-        # Stack images
-        batch['image'] = rearrange(batch['image'], 'b () c h w -> b c h w')
-
-        return batch
+    image: Tensor
+    bbox_xyxy: NotRequired[list[Tensor]]
+    label: NotRequired[list[Tensor]]
+    mask: NotRequired[list[Tensor]]
 
 
-def collate_fn_detection(batch: list[dict[str, Tensor]]) -> dict[str, Any]:
+def collate_fn_detection(batch: list[Sample]) -> DetectionSample:
     """Custom collate fn for object detection and instance segmentation.
 
     Args:
         batch: list of sample dicts return by dataset
 
     Returns:
-        batch dict output
+        collatted batch dict
 
     .. versionadded:: 0.6
     """
-    output: dict[str, Any] = {}
-    output['image'] = [sample['image'] for sample in batch]
-    output['boxes'] = [sample['boxes'].float() for sample in batch]
-    if 'labels' in batch[0]:
-        output['labels'] = [sample['labels'] for sample in batch]
-    else:
-        output['labels'] = [
-            torch.tensor([1] * len(sample['boxes'])) for sample in batch
+    collated: DetectionSample = {
+        'image': torch.stack([sample['image'] for sample in batch])
+    }
+    if 'bbox_xyxy' in batch[0]:
+        collated['bbox_xyxy'] = [sample['bbox_xyxy'].float() for sample in batch]
+    if 'label' in batch[0]:
+        collated['label'] = [sample['label'] for sample in batch]
+    elif 'bbox_xyxy' in batch[0]:
+        collated['label'] = [
+            torch.tensor([1] * len(sample['bbox_xyxy'])) for sample in batch
         ]
-
-    if 'masks' in batch[0]:
-        output['masks'] = [sample['masks'] for sample in batch]
-    return output
+    if 'mask' in batch[0]:
+        collated['mask'] = [sample['mask'] for sample in batch]
+    return collated
 
 
 def group_shuffle_split(
-    groups: Iterable[Any],
+    groups: Iterable[object],
     train_size: float | None = None,
     test_size: float | None = None,
     random_state: int | None = None,

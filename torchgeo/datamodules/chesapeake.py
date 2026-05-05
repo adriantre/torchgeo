@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """Chesapeake Bay High-Resolution Land Cover Project datamodule."""
@@ -6,47 +6,12 @@
 from typing import Any
 
 import kornia.augmentation as K
-import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-from torch import Tensor
 
 from ..datasets import ChesapeakeCVPR
+from ..datasets.utils import Sample
 from ..samplers import GridGeoSampler, RandomBatchGeoSampler
-from ..transforms import AugmentationSequential
 from .geo import GeoDataModule
-
-
-class _Transform(nn.Module):
-    """Version of AugmentationSequential designed for samples, not batches."""
-
-    def __init__(self, aug: nn.Module) -> None:
-        """Initialize a new _Transform instance.
-
-        Args:
-            aug: Augmentation to apply.
-        """
-        super().__init__()
-        self.aug = aug
-
-    def forward(self, sample: dict[str, Any]) -> dict[str, Any]:
-        """Apply the augmentation.
-
-        Args:
-            sample: Input sample.
-
-        Returns:
-            Augmented sample.
-        """
-        for key in ['image', 'mask']:
-            dtype = sample[key].dtype
-            # All inputs must be float
-            sample[key] = sample[key].float()
-            sample[key] = self.aug(sample[key])
-            sample[key] = sample[key].to(dtype)
-            # Kornia adds batch dimension
-            sample[key] = rearrange(sample[key], '() c h w -> c h w')
-        return sample
 
 
 class ChesapeakeCVPRDataModule(GeoDataModule):
@@ -89,23 +54,22 @@ class ChesapeakeCVPRDataModule(GeoDataModule):
                 :class:`~torchgeo.datasets.ChesapeakeCVPR`.
 
         Raises:
-            ValueError: If ``use_prior_labels=True`` is used with ``class_set=7``.
+            AssertionError: If ``use_prior_labels=True`` is used with ``class_set=7``.
         """
         # This is a rough estimate of how large of a patch we will need to sample in
         # EPSG:3857 in order to guarantee a large enough patch in the local CRS.
         self.original_patch_size = patch_size * 3
-        kwargs['transforms'] = _Transform(K.CenterCrop(patch_size))
+        kwargs['transforms'] = K.AugmentationSequential(
+            K.CenterCrop(patch_size), data_keys=None, keepdim=True
+        )
 
         super().__init__(
             ChesapeakeCVPR, batch_size, patch_size, length, num_workers, **kwargs
         )
 
         assert class_set in [5, 7]
-        if use_prior_labels and class_set == 7:
-            raise ValueError(
-                'The pre-generated prior labels are only valid for the 5'
-                + ' class set of labels'
-            )
+        msg = 'The pre-generated prior labels are only valid for the 5 class set of labels'
+        assert not (use_prior_labels and class_set == 7), msg
 
         self.train_splits = train_splits
         self.val_splits = val_splits
@@ -122,8 +86,8 @@ class ChesapeakeCVPRDataModule(GeoDataModule):
         else:
             self.layers = ['naip-new', 'lc']
 
-        self.aug = AugmentationSequential(
-            K.Normalize(mean=self.mean, std=self.std), data_keys=['image', 'mask']
+        self.aug = K.AugmentationSequential(
+            K.Normalize(mean=self.mean, std=self.std), data_keys=None, keepdim=True
         )
 
     def setup(self, stage: str) -> None:
@@ -157,9 +121,7 @@ class ChesapeakeCVPRDataModule(GeoDataModule):
                 self.test_dataset, self.original_patch_size, self.original_patch_size
             )
 
-    def on_after_batch_transfer(
-        self, batch: dict[str, Tensor], dataloader_idx: int
-    ) -> dict[str, Tensor]:
+    def on_after_batch_transfer(self, batch: Sample, dataloader_idx: int) -> Sample:
         """Apply batch augmentations to the batch after it is transferred to the device.
 
         Args:

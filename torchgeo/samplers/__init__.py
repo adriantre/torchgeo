@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """TorchGeo samplers."""
@@ -9,18 +9,13 @@ from .single import GeoSampler, GridGeoSampler, PreChippedGeoSampler, RandomGeoS
 from .utils import get_random_bounding_box, tile_to_chips
 
 __all__ = (
-    # Samplers
+    'BatchGeoSampler',
+    'GeoSampler',
     'GridGeoSampler',
     'PreChippedGeoSampler',
-    'RandomGeoSampler',
-    # Batch samplers
     'RandomBatchGeoSampler',
-    # Base classes
-    'GeoSampler',
-    'BatchGeoSampler',
-    # Utilities
+    'RandomGeoSampler',
+    'Units',
     'get_random_bounding_box',
     'tile_to_chips',
-    # Constants
-    'Units',
 )

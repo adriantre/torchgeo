@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """ZueriCrop dataset."""
@@ -13,7 +13,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError, RGBBandsMissingError
 from .geo import NonGeoDataset
-from .utils import Path, download_url, lazy_import, percentile_normalization
+from .utils import Path, Sample, download_url, lazy_import, quantile_normalization
 
 
 class ZueriCrop(NonGeoDataset):
@@ -52,10 +52,7 @@ class ZueriCrop(NonGeoDataset):
        * `h5py <https://pypi.org/project/h5py/>`_ to load the dataset
     """
 
-    urls = (
-        'https://polybox.ethz.ch/index.php/s/uXfdr2AcXE3QNB6/download',
-        'https://raw.githubusercontent.com/0zgur0/multi-stage-convSTAR-network/fa92b5b3cb77f5171c5c3be740cd6e6395cc29b6/labels.csv',
-    )
+    url = 'https://hf.co/datasets/isaaccorley/zuericrop/resolve/8ac0f416fbaab032d8670cc55f984b9f079e86b2/'
     md5s = ('1635231df67f3d25f4f1e62c98e221a4', '5118398c7a5bbc246f5f6bb35d8d529b')
     filenames = ('ZueriCrop.hdf5', 'labels.csv')
 
@@ -66,7 +63,7 @@ class ZueriCrop(NonGeoDataset):
         self,
         root: Path = 'data',
         bands: Sequence[str] = band_names,
-        transforms: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         download: bool = False,
         checksum: bool = False,
     ) -> None:
@@ -100,7 +97,7 @@ class ZueriCrop(NonGeoDataset):
 
         self._verify()
 
-    def __getitem__(self, index: int) -> dict[str, Tensor]:
+    def __getitem__(self, index: int) -> Sample:
         """Return an index within the dataset.
 
         Args:
@@ -112,7 +109,7 @@ class ZueriCrop(NonGeoDataset):
         image = self._load_image(index)
         mask, boxes, label = self._load_target(index)
 
-        sample = {'image': image, 'mask': mask, 'boxes': boxes, 'label': label}
+        sample = {'image': image, 'mask': mask, 'bbox_xyxy': boxes, 'label': label}
 
         if self.transforms is not None:
             sample = self.transforms(sample)
@@ -221,11 +218,11 @@ class ZueriCrop(NonGeoDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        for url, filename, md5 in zip(self.urls, self.filenames, self.md5s):
+        for filename, md5 in zip(self.filenames, self.md5s):
             filepath = os.path.join(self.root, filename)
             if not os.path.exists(filepath):
                 download_url(
-                    url,
+                    self.url + filename,
                     self.root,
                     filename=filename,
                     md5=md5 if self.checksum else None,
@@ -250,7 +247,7 @@ class ZueriCrop(NonGeoDataset):
 
     def plot(
         self,
-        sample: dict[str, Tensor],
+        sample: Sample,
         time_step: int = 0,
         show_titles: bool = True,
         suptitle: str | None = None,
@@ -281,9 +278,7 @@ class ZueriCrop(NonGeoDataset):
         ncols = 2
         image, mask = sample['image'][time_step, rgb_indices], sample['mask']
 
-        image = torch.tensor(
-            percentile_normalization(image.numpy()) * 255, dtype=torch.uint8
-        )
+        image = (quantile_normalization(image) * 255).byte()
 
         mask = torch.argmax(mask, dim=0)
 
@@ -291,7 +286,7 @@ class ZueriCrop(NonGeoDataset):
             ncols += 1
             preds = torch.argmax(sample['prediction'], dim=0)
 
-        fig, axs = plt.subplots(ncols=ncols, figsize=(10, 10 * ncols))
+        fig, axs = plt.subplots(ncols=ncols, figsize=(10 * ncols, 10))
 
         axs[0].imshow(image.permute(1, 2, 0))
         axs[0].axis('off')

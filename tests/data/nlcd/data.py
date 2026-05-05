@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
-import hashlib
 import os
-import shutil
+import zipfile
 
 import numpy as np
 import rasterio
@@ -15,8 +14,6 @@ from rasterio.transform import Affine
 SIZE = 32
 
 np.random.seed(0)
-
-dir = 'nlcd_{}_land_cover_l48_20210604'
 
 years = [2011, 2019]
 
@@ -67,21 +64,12 @@ def create_file(path: str, dtype: str) -> None:
 
 if __name__ == '__main__':
     for year in years:
-        year_dir = dir.format(year)
-        # Remove old data
-        if os.path.isdir(year_dir):
-            shutil.rmtree(year_dir)
-
-        os.makedirs(os.path.join(os.getcwd(), year_dir))
-
-        zip_filename = year_dir + '.zip'
-        filename = year_dir + '.img'
-        create_file(os.path.join(year_dir, filename), dtype='int8')
-
-        # Compress data
-        shutil.make_archive(year_dir, 'zip', '.', year_dir)
-
-        # Compute checksums
-        with open(zip_filename, 'rb') as f:
-            md5 = hashlib.md5(f.read()).hexdigest()
-            print(f'{zip_filename}: {md5}')
+        filename = os.path.join(
+            'tests', 'data', 'nlcd', f'Annual_NLCD_LndCov_{year}_CU_C1V1.tif'
+        )
+        create_file(filename, dtype='int8')
+        zipfilename = os.path.join(
+            'tests', 'data', 'nlcd', f'Annual_NLCD_LndCov_{year}_CU_C1V1.zip'
+        )
+        with zipfile.ZipFile(zipfilename, 'w') as zip:
+            zip.write(filename, arcname=filename)

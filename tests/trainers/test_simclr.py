@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 import os
@@ -29,6 +29,7 @@ class TestSimCLRTask:
         'name',
         [
             'chesapeake_cvpr_prior_simclr',
+            'hyspecnet_simclr',
             'seco_simclr_1',
             'seco_simclr_2',
             'ssl4eo_l_simclr_1',

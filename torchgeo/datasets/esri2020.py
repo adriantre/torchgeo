@@ -1,21 +1,20 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """Esri 2020 Land Cover Dataset."""
 
 import glob
 import os
-import pathlib
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import cast
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from rasterio.crs import CRS
+from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, download_url, extract_archive
+from .utils import Path, Sample, download_url, extract_archive
 
 
 class Esri2020(RasterDataset):
@@ -42,7 +41,7 @@ class Esri2020(RasterDataset):
     9. Snow/Ice
     10. Clouds
 
-    A more detailed explanation of the invidual classes can be found
+    A more detailed explanation of the individual classes can be found
     `here <https://www.arcgis.com/home/item.html?id=fc92d38533d440078f17678ebc20e8e2>`_.
 
     If you use this dataset please cite the following paper:
@@ -72,11 +71,12 @@ class Esri2020(RasterDataset):
         self,
         paths: Path | Iterable[Path] = 'data',
         crs: CRS | None = None,
-        res: float | None = None,
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        res: float | tuple[float, float] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
         download: bool = False,
         checksum: bool = False,
+        time_series: bool = False,
     ) -> None:
         """Initialize a new Dataset instance.
 
@@ -84,16 +84,22 @@ class Esri2020(RasterDataset):
             paths: one or more root directories to search or files to load
             crs: :term:`coordinate reference system (CRS)` to warp to
                 (defaults to the CRS of the first file found)
-            res: resolution of the dataset in units of CRS
+            res: resolution of the dataset in units of CRS in (xres, yres) format. If a
+                single float is provided, it is used for both the x and y resolution.
                 (defaults to the resolution of the first file found)
             transforms: a function/transform that takes an input sample
                 and returns a transformed version
             cache: if True, cache file handle to speed up repeated sampling
             download: if True, download dataset and store it in the root directory
             checksum: if True, check the MD5 of the downloaded files (may be slow)
+            time_series: if True, stack data along the time series dimension
+                [T, C, H, W]. If False, merge data into a [C, H, W] mosaic.
 
         Raises:
             DatasetNotFoundError: If dataset is not found and *download* is False.
+
+        .. versionadded:: 0.9
+           The *time_series* parameter.
 
         .. versionchanged:: 0.5
            *root* was renamed to *paths*.
@@ -104,7 +110,9 @@ class Esri2020(RasterDataset):
 
         self._verify()
 
-        super().__init__(paths, crs, res, transforms=transforms, cache=cache)
+        super().__init__(
+            paths, crs, res, transforms=transforms, cache=cache, time_series=time_series
+        )
 
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
@@ -113,8 +121,9 @@ class Esri2020(RasterDataset):
             return
 
         # Check if the zip files have already been downloaded
-        assert isinstance(self.paths, str | pathlib.Path)
-        pathname = os.path.join(self.paths, self.zipfile)
+        assert isinstance(self.paths, str | os.PathLike)
+        paths = cast(Path, self.paths)
+        pathname = os.path.join(paths, self.zipfile)
         if glob.glob(pathname):
             self._extract()
             return
@@ -129,18 +138,18 @@ class Esri2020(RasterDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        download_url(self.url, self.paths, filename=self.zipfile, md5=self.md5)
+        assert isinstance(self.paths, str | os.PathLike)
+        paths = cast(Path, self.paths)
+        download_url(self.url, paths, filename=self.zipfile, md5=self.md5)
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | pathlib.Path)
-        extract_archive(os.path.join(self.paths, self.zipfile))
+        assert isinstance(self.paths, str | os.PathLike)
+        paths = cast(Path, self.paths)
+        extract_archive(os.path.join(paths, self.zipfile))
 
     def plot(
-        self,
-        sample: dict[str, Any],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 

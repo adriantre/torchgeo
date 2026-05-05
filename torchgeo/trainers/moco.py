@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """MoCo trainer for self-supervised learning (SSL)."""
@@ -6,10 +6,10 @@
 import os
 import warnings
 from collections.abc import Sequence
-from typing import Any
+from typing import cast
 
 import kornia.augmentation as K
-import lightning
+import lightning.pytorch.utilities.types
 import timm
 import torch
 import torch.nn as nn
@@ -19,10 +19,11 @@ from lightly.models.modules import MoCoProjectionHead
 from lightly.models.utils import deactivate_requires_grad, update_momentum
 from lightly.utils.scheduler import cosine_schedule
 from torch import Tensor
-from torch.optim import SGD, AdamW, Optimizer  # type: ignore[attr-defined]
+from torch.optim import SGD, AdamW, Optimizer
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     LinearLR,
+    LRScheduler,
     MultiStepLR,
     SequentialLR,
 )
@@ -30,14 +31,10 @@ from torchvision.models._api import WeightsEnum
 
 import torchgeo.transforms as T
 
+from ..datasets.utils import Sample
 from ..models import get_weight
 from . import utils
 from .base import BaseTask
-
-try:
-    from torch.optim.lr_scheduler import LRScheduler
-except ImportError:
-    from torch.optim.lr_scheduler import _LRScheduler as LRScheduler
 
 
 def moco_augmentations(
@@ -136,6 +133,7 @@ class MoCoTask(BaseTask):
     .. versionadded:: 0.5
     """
 
+    ignore = ('weights', 'augmentation1', 'augmentation2')
     monitor = 'train_loss'
 
     def __init__(
@@ -219,7 +217,7 @@ class MoCoTask(BaseTask):
                 warnings.warn('MoCo v3 does not use a memory bank')
 
         self.weights = weights
-        super().__init__(ignore=['weights', 'augmentation1', 'augmentation2'])
+        super().__init__()
 
         grayscale_weights = grayscale_weights or torch.ones(in_channels)
         aug1, aug2 = moco_augmentations(version, size, grayscale_weights)
@@ -258,7 +256,7 @@ class MoCoTask(BaseTask):
         # Create projection (and prediction) head
         batch_norm = version == 3
         if version > 1:
-            input_dim = self.backbone.num_features
+            input_dim = cast(int, self.backbone.num_features)
             self.projection_head = MoCoProjectionHead(
                 input_dim, hidden_dim, output_dim, layers, batch_norm=batch_norm
             )
@@ -292,7 +290,7 @@ class MoCoTask(BaseTask):
 
     def configure_optimizers(
         self,
-    ) -> 'lightning.pytorch.utilities.types.OptimizerLRSchedulerConfig':
+    ) -> 'lightning.pytorch.utilities.types.OptimizerLRScheduler':
         """Initialize the optimizer and learning rate scheduler.
 
         Returns:
@@ -367,7 +365,7 @@ class MoCoTask(BaseTask):
         return k
 
     def training_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self, batch: Sample, batch_idx: int, dataloader_idx: int = 0
     ) -> Tensor:
         """Compute the training loss and additional metrics.
 
@@ -411,9 +409,10 @@ class MoCoTask(BaseTask):
                 k = self.forward_momentum(x2)
             loss = self.criterion(q, k)
         if self.hparams['version'] == 3:
-            m = cosine_schedule(self.current_epoch, self.trainer.max_epochs, m, 1)
+            max_steps = self.trainer.max_epochs or 200
+            m = cosine_schedule(self.current_epoch, max_steps, m, 1)
             q1, h1 = self.forward(x1)
-            q2, h2 = self.forward(x2)
+            q2, _ = self.forward(x2)
             with torch.no_grad():
                 update_momentum(self.backbone, self.backbone_momentum, m)
                 update_momentum(self.projection_head, self.projection_head_momentum, m)
@@ -435,12 +434,14 @@ class MoCoTask(BaseTask):
         return loss
 
     def validation_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self, batch: Sample, batch_idx: int, dataloader_idx: int = 0
     ) -> None:
         """No-op, does nothing."""
 
-    def test_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+    def test_step(self, batch: Sample, batch_idx: int, dataloader_idx: int = 0) -> None:
         """No-op, does nothing."""
 
-    def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+    def predict_step(
+        self, batch: Sample, batch_idx: int, dataloader_idx: int = 0
+    ) -> None:
         """No-op, does nothing."""

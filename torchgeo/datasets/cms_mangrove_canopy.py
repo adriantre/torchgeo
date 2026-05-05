@@ -1,31 +1,30 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """CMS Global Mangrove Canopy dataset."""
 
 import os
-import pathlib
 from collections.abc import Callable
-from typing import Any
+from typing import cast
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from rasterio.crs import CRS
+from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, check_integrity, extract_archive
+from .utils import Path, Sample, check_integrity, extract_archive
 
 
 class CMSGlobalMangroveCanopy(RasterDataset):
     """CMS Global Mangrove Canopy dataset.
 
     The `CMS Global Mangrove Canopy dataset
-    <https://daac.ornl.gov/cgi-bin/dsviewer.pl?ds_id=1665>`_
+    <https://www.earthdata.nasa.gov/data/catalog/ornl-cloud-cms-global-map-mangrove-canopy-1665-1.3>`_
     consists of a single band map at 30m resolution of either aboveground biomass (agb),
     basal area weighted height (hba95), or maximum canopy height (hmax95).
 
-    The dataset needs to be manually dowloaded from the above link, where you can make
+    The dataset needs to be manually downloaded from the above link, where you can make
     an account and subsequently download the dataset.
 
     .. versionadded:: 0.3
@@ -172,12 +171,13 @@ class CMSGlobalMangroveCanopy(RasterDataset):
         self,
         paths: Path | list[Path] = 'data',
         crs: CRS | None = None,
-        res: float | None = None,
+        res: float | tuple[float, float] | None = None,
         measurement: str = 'agb',
         country: str = all_countries[0],
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
         checksum: bool = False,
+        time_series: bool = False,
     ) -> None:
         """Initialize a new Dataset instance.
 
@@ -185,7 +185,8 @@ class CMSGlobalMangroveCanopy(RasterDataset):
             paths: one or more root directories to search or files to load
             crs: :term:`coordinate reference system (CRS)` to warp to
                 (defaults to the CRS of the first file found)
-            res: resolution of the dataset in units of CRS
+            res: resolution of the dataset in units of CRS in (xres, yres) format. If a
+                single float is provided, it is used for both the x and y resolution.
                 (defaults to the resolution of the first file found)
             measurement: which of the three measurements, 'agb', 'hba95', or 'hmax95'
             country: country for which to retrieve data
@@ -193,10 +194,15 @@ class CMSGlobalMangroveCanopy(RasterDataset):
                 and returns a transformed version
             cache: if True, cache file handle to speed up repeated sampling
             checksum: if True, check the MD5 of the downloaded files (may be slow)
+            time_series: if True, stack data along the time series dimension
+                [T, C, H, W]. If False, merge data into a [C, H, W] mosaic.
 
         Raises:
             AssertionError: if country or measurement arg are not str or invalid
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.9
+           The *time_series* parameter.
 
         .. versionchanged:: 0.5
            *root* was renamed to *paths*.
@@ -205,22 +211,24 @@ class CMSGlobalMangroveCanopy(RasterDataset):
         self.checksum = checksum
 
         assert isinstance(country, str), 'Country argument must be a str.'
-        assert (
-            country in self.all_countries
-        ), f'You have selected an invalid country, please choose one of {self.all_countries}'
+        assert country in self.all_countries, (
+            f'You have selected an invalid country, please choose one of {self.all_countries}'
+        )
         self.country = country
 
         assert isinstance(measurement, str), 'Measurement must be a string.'
-        assert (
-            measurement in self.measurements
-        ), f'You have entered an invalid measurement, please choose one of {self.measurements}.'
+        assert measurement in self.measurements, (
+            f'You have entered an invalid measurement, please choose one of {self.measurements}.'
+        )
         self.measurement = measurement
 
         self.filename_glob = f'**/Mangrove_{self.measurement}_{self.country}*'
 
         self._verify()
 
-        super().__init__(paths, crs, res, transforms=transforms, cache=cache)
+        super().__init__(
+            paths, crs, res, transforms=transforms, cache=cache, time_series=time_series
+        )
 
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
@@ -229,8 +237,9 @@ class CMSGlobalMangroveCanopy(RasterDataset):
             return
 
         # Check if the zip file has already been downloaded
-        assert isinstance(self.paths, str | pathlib.Path)
-        pathname = os.path.join(self.paths, self.zipfile)
+        assert isinstance(self.paths, str | os.PathLike)
+        paths = cast(Path, self.paths)
+        pathname = os.path.join(paths, self.zipfile)
         if os.path.exists(pathname):
             if self.checksum and not check_integrity(pathname, self.md5):
                 raise RuntimeError('Dataset found, but corrupted.')
@@ -241,15 +250,13 @@ class CMSGlobalMangroveCanopy(RasterDataset):
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | pathlib.Path)
-        pathname = os.path.join(self.paths, self.zipfile)
+        assert isinstance(self.paths, str | os.PathLike)
+        paths = cast(Path, self.paths)
+        pathname = os.path.join(paths, self.zipfile)
         extract_archive(pathname)
 
     def plot(
-        self,
-        sample: dict[str, Any],
-        show_titles: bool = True,
-        suptitle: str | None = None,
+        self, sample: Sample, show_titles: bool = True, suptitle: str | None = None
     ) -> Figure:
         """Plot a sample from the dataset.
 

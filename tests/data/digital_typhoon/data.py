@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 import os
@@ -9,7 +9,6 @@ import shutil
 import h5py
 import numpy as np
 import pandas as pd
-from torchvision.datasets.utils import calculate_md5
 
 # Define the root directory
 root = 'WP'
@@ -78,7 +77,7 @@ for typhoon_id in range(NUM_TYHOON_IDS):
         }
     )
 
-    # Save the DataFrame to correspoding typhoon id as metadata
+    # Save the DataFrame to corresponding typhoon id as metadata
     df.to_csv(os.path.join(root, 'metadata', f'{typhoon_id}.csv'), index=False)
 
     all_dfs.append(df)
@@ -104,8 +103,3 @@ with open(path, 'rb') as f:
 # Create gzab as a copy of gzaa
 shutil.copy2(f'{path}aa', f'{path}ab')
 paths.append(f'{path}ab')
-
-
-# Calculate the md5sum of the tar file
-for path in paths:
-    print(f'{path}: {calculate_md5(path)}')

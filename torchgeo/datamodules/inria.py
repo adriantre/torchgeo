@@ -1,4 +1,4 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 """InriaAerialImageLabeling datamodule."""
@@ -9,8 +9,6 @@ import kornia.augmentation as K
 
 from ..datasets import InriaAerialImageLabeling
 from ..samplers.utils import _to_tuple
-from ..transforms import AugmentationSequential
-from ..transforms.transforms import _RandomNCrop
 from .geo import NonGeoDataModule
 
 
@@ -40,26 +38,36 @@ class InriaAerialImageLabelingDataModule(NonGeoDataModule):
             **kwargs: Additional keyword arguments passed to
                 :class:`~torchgeo.datasets.InriaAerialImageLabeling`.
         """
-        super().__init__(InriaAerialImageLabeling, 1, num_workers, **kwargs)
+        super().__init__(
+            InriaAerialImageLabeling,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            **kwargs,
+        )
 
         self.patch_size = _to_tuple(patch_size)
 
-        self.train_aug = AugmentationSequential(
+        self.train_aug = K.AugmentationSequential(
             K.Normalize(mean=self.mean, std=self.std),
             K.RandomHorizontalFlip(p=0.5),
             K.RandomVerticalFlip(p=0.5),
-            _RandomNCrop(self.patch_size, batch_size),
-            data_keys=['image', 'mask'],
+            K.RandomCrop(self.patch_size, pad_if_needed=True),
+            data_keys=None,
+            keepdim=True,
         )
-        self.aug = AugmentationSequential(
+        self.aug = K.AugmentationSequential(
             K.Normalize(mean=self.mean, std=self.std),
-            _RandomNCrop(self.patch_size, batch_size),
-            data_keys=['image', 'mask'],
+            K.CenterCrop(self.patch_size),
+            data_keys=None,
+            keepdim=True,
+            same_on_batch=True,
         )
-        self.predict_aug = AugmentationSequential(
+        self.predict_aug = K.AugmentationSequential(
             K.Normalize(mean=self.mean, std=self.std),
-            _RandomNCrop(self.patch_size, batch_size),
-            data_keys=['image'],
+            K.CenterCrop(self.patch_size),
+            data_keys=None,
+            keepdim=True,
+            same_on_batch=True,
         )
 
     def setup(self, stage: str) -> None:

@@ -26,6 +26,11 @@ L8 Biome
 
 .. autoclass:: L8BiomeDataModule
 
+MMFlood
+^^^^^^^^
+
+.. autoclass:: MMFloodDataModule
+
 NAIP
 ^^^^
 
@@ -57,15 +62,30 @@ BigEarthNet
 
 .. autoclass:: BigEarthNetDataModule
 
+BRIGHT
+^^^^^^
+
+.. autoclass:: BRIGHTDFC2025DataModule
+
 CaBuAr
 ^^^^^^
 
 .. autoclass:: CaBuArDataModule
 
+CaFFe
+^^^^^
+
+.. autoclass:: CaFFeDataModule
+
 ChaBuD
 ^^^^^^
 
 .. autoclass:: ChaBuDDataModule
+
+Cloud Cover Detection
+^^^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: CloudCoverDetectionDataModule
 
 COWC
 ^^^^
@@ -99,6 +119,11 @@ FAIR1M
 
 .. autoclass:: FAIR1MDataModule
 
+Fields Of The World
+^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: FieldsOfTheWorldDataModule
+
 FireRisk
 ^^^^^^^^
 
@@ -114,6 +139,11 @@ GID-15
 
 .. autoclass:: GID15DataModule
 
+HySpecNet-11k
+^^^^^^^^^^^^^
+
+.. autoclass:: HySpecNet11kDataModule
+
 Inria Aerial Image Labeling
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -123,6 +153,7 @@ LandCover.ai
 ^^^^^^^^^^^^
 
 .. autoclass:: LandCoverAIDataModule
+.. autoclass:: LandCoverAI100DataModule
 
 LEVIR-CD
 ^^^^^^^^
@@ -148,6 +179,18 @@ OSCD
 ^^^^
 
 .. autoclass:: OSCDDataModule
+.. autoclass:: OSCD100DataModule
+
+PASTIS
+^^^^^^
+
+.. autoclass:: PASTISDataModule
+.. autoclass:: PASTIS100DataModule
+
+PatternNet
+^^^^^^^^^^
+
+.. autoclass:: PatternNetDataModule
 
 Potsdam
 ^^^^^^^
@@ -158,6 +201,11 @@ QuakeSet
 ^^^^^^^^
 
 .. autoclass:: QuakeSetDataModule
+
+ReforesTree
+^^^^^^^^^^^
+
+.. autoclass:: ReforesTreeDataModule
 
 RESISC45
 ^^^^^^^^
@@ -174,15 +222,27 @@ SEN12MS
 
 .. autoclass:: SEN12MSDataModule
 
+SKIPP'D
+^^^^^^^
+
+.. autoclass:: SKIPPDDataModule
+
 So2Sat
 ^^^^^^
 
 .. autoclass:: So2SatDataModule
 
+Solar Plants Brazil
+^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: SolarPlantsBrazilDataModule
+
 SpaceNet
 ^^^^^^^^
 
+.. autoclass:: SpaceNetBaseDataModule
 .. autoclass:: SpaceNet1DataModule
+.. autoclass:: SpaceNet6DataModule
 
 SSL4EO
 ^^^^^^
@@ -195,10 +255,20 @@ SSL4EO-L Benchmark
 
 .. autoclass:: SSL4EOLBenchmarkDataModule
 
+Substation
+^^^^^^^^^^
+
+.. autoclass:: SubstationDataModule
+
 SustainBench Crop Yield
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 .. autoclass:: SustainBenchCropYieldDataModule
+
+TreeSatAI
+^^^^^^^^^
+
+.. autoclass:: TreeSatAIDataModule
 
 Tropical Cyclone
 ^^^^^^^^^^^^^^^^
@@ -220,10 +290,15 @@ Vaihingen
 
 .. autoclass:: Vaihingen2DDataModule
 
-xView2
+VHR-10
 ^^^^^^
 
-.. autoclass:: XView2DataModule
+.. autoclass:: VHR10DataModule
+
+xBD
+^^^
+
+.. autoclass:: xBDDataModule
 
 Base Classes
 ------------

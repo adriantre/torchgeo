@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright (c) Microsoft Corporation. All rights reserved.
+# Copyright (c) TorchGeo Contributors. All rights reserved.
 # Licensed under the MIT License.
 
 import os
@@ -10,7 +10,6 @@ import numpy as np
 import rasterio as rio
 from rasterio.crs import CRS
 from rasterio.transform import Affine
-from torchvision.datasets.utils import calculate_md5
 
 
 def write_data(
@@ -31,16 +30,12 @@ def write_data(
             dst.write(img, i)
 
 
-def generate_test_data(root: str, n_samples: int = 2) -> str:
-    """Creates test data archive for InriaAerialImageLabeling dataset and
-    returns its md5 hash.
+def generate_test_data(root: str, n_samples: int = 2) -> None:
+    """Creates test data archive for InriaAerialImageLabeling dataset.
 
     Args:
-        root (str): Path to store test data
-        n_samples (int, optional): Number of samples. Defaults to 2.
-
-    Returns:
-        str: md5 hash of created archive
+        root: Path to store test data
+        n_samples: Number of samples. Defaults to 2.
     """
     dtype = np.dtype('uint8')
     size = (8, 8)
@@ -68,9 +63,9 @@ def generate_test_data(root: str, n_samples: int = 2) -> str:
         lbl = np.random.randint(2, size=size, dtype=dtype)
         timg = np.random.randint(dtype_max, size=size, dtype=dtype)
 
-        img_path = os.path.join(img_dir, f'austin{i+1}.tif')
-        lbl_path = os.path.join(lbl_dir, f'austin{i+1}.tif')
-        timg_path = os.path.join(timg_dir, f'austin{i+10}.tif')
+        img_path = os.path.join(img_dir, f'austin{i + 1}.tif')
+        lbl_path = os.path.join(lbl_dir, f'austin{i + 1}.tif')
+        timg_path = os.path.join(timg_dir, f'austin{i + 10}.tif')
 
         write_data(img_path, img, driver, crs, transform)
         write_data(lbl_path, lbl, driver, crs, transform)
@@ -81,9 +76,7 @@ def generate_test_data(root: str, n_samples: int = 2) -> str:
     shutil.make_archive(
         archive_path, 'zip', root_dir=root, base_dir='AerialImageDataset'
     )
-    return calculate_md5(f'{archive_path}.zip')
 
 
 if __name__ == '__main__':
-    md5_hash = generate_test_data(os.getcwd(), 7)
-    print(md5_hash)
+    generate_test_data(os.getcwd(), 7)
