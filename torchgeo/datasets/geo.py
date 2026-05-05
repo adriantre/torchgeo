@@ -359,38 +359,17 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         # Using set to remove any duplicates if directories are overlapping
         files: set[str] = set()
         for path in paths:
-            if os.path.isdir(path):
-                pathname = os.path.join(path, '**', self.filename_glob)
-                files |= set(glob.iglob(pathname, recursive=True))
-            elif os.path.isfile(path) and fnmatch.fnmatch(
-                str(path), f'*{self.filename_glob}'
-            ):
-                files.add(str(path))
-            elif path_is_vsi(path):
-                try:
-                    all_files = _listdir_vfs_recursive(path)
-                except FileNotFoundError:
-                    all_files = []
-                vsi_matches = {
-                    f
-                    for f in all_files
-                    if fnmatch.fnmatch(os.path.basename(f), self.filename_glob)
-                }
-                if vsi_matches:
-                    files |= vsi_matches
-                elif not hasattr(self, 'download'):
-                    warnings.warn(
-                        f"Could not find any relevant files for provided path '{path}'. "
-                        f'Path was ignored.',
-                        UserWarning,
-                    )
-            elif not hasattr(self, 'download'):
+            found = type(self).list_files(path)
+            if found:
+                files.update(found)
+            elif not os.path.isdir(path) and not hasattr(self, 'download'):
                 warnings.warn(
                     f"Could not find any relevant files for provided path '{path}'. "
                     f'Path was ignored.',
                     UserWarning,
                 )
 
+        # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
 
