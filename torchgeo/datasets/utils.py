@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import bz2
 import contextlib
-import fnmatch
-import glob
 import hashlib
 import importlib
 import os
@@ -935,7 +933,7 @@ def _listdir_one(path: str) -> tuple[list[str], list[str]]:
         raise FileNotFoundError(f'No such file or directory: {path}') from e
 
 
-def _listdir_vfs_recursive(root: Path, max_workers: int = 16) -> list[str]:
+def listdir_vfs_recursive(root: Path, max_workers: int = 16) -> list[str]:
     """Lists all files in Virtual File Systems (VFS) recursively.
 
     Each BFS level is processed concurrently using a thread pool, so N sibling
@@ -964,41 +962,6 @@ def _listdir_vfs_recursive(root: Path, max_workers: int = 16) -> list[str]:
             for child_dirs, leaf_files in results:
                 pending.extend(child_dirs)
                 files.extend(leaf_files)
-    return files
-
-
-def _list_directory_recursive(root: Path, filename_glob: str) -> list[str]:
-    """Lists files in directory recursively matching the given glob expression.
-
-    Also supports GDAL Virtual File Systems (VFS).
-
-    Args:
-        root: directory to list. For VFS these will have prefix
-            e.g. /vsiaz/ or az:// for azure blob storage
-        filename_glob: filename pattern to filter filenames
-
-    Returns:
-        A list of all file paths matching filename_glob in the root directory or its
-        subdirectories.
-
-    .. versionadded:: 0.7
-    """
-    files: list[str]
-    if path_is_vsi(root):
-        # Change type to match expected input to filter
-        all_files: list[str] = []
-        try:
-            all_files = _listdir_vfs_recursive(root)
-        except FileNotFoundError:
-            # To match the behaviour of glob.iglob we silently return empty list
-            # for non-existing root.
-            pass
-        files = [
-            f for f in all_files if fnmatch.fnmatch(os.path.basename(f), filename_glob)
-        ]
-    else:
-        pathname = os.path.join(root, '**', filename_glob)
-        files = glob.glob(pathname, recursive=True)
     return files
 
 

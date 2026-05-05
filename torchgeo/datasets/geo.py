@@ -44,12 +44,12 @@ from .utils import (
     GeoSlice,
     Path,
     Sample,
-    _listdir_vfs_recursive,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
     disambiguate_timestamp,
     lazy_import,
+    listdir_vfs_recursive,
     merge_samples,
     path_is_vsi,
 )
@@ -329,7 +329,7 @@ class GeoDataset(Dataset[Sample], abc.ABC):
             files = {str(path)}
         elif path_is_vsi(path):
             try:
-                all_files = _listdir_vfs_recursive(path)
+                all_files = listdir_vfs_recursive(path)
             except FileNotFoundError:
                 all_files = []
             files = {
@@ -344,7 +344,7 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         """A list of all files in the dataset.
 
         Supports local directories, individual files, and VSI paths such as
-        cloud storage buckets and local archives (zip, tar, etc.).
+        cloud storage buckets and archives (zip, tar, etc.).
 
         Returns:
             All files in the dataset.
