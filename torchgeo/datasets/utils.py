@@ -21,6 +21,7 @@ import urllib.request
 import warnings
 import zipfile
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, TypeAlias, cast, overload
@@ -884,37 +885,85 @@ def path_is_vsi(path: Path) -> bool:
     return '://' in str(path) or str(path).startswith('/vsi')
 
 
-def _listdir_vfs_recursive(root: Path) -> list[str]:
+# Maps file extensions to GDAL VSI archive prefixes, ordered longest-first so that
+# compound extensions like .tar.gz are matched before their suffix (.gz).
+_ARCHIVE_VSI_PREFIXES: dict[str, str] = {
+    '.tar.gz': '/vsitar/vsigzip/',
+    '.tgz': '/vsitar/vsigzip/',
+    '.tar': '/vsitar/',
+    '.zip': '/vsizip/',
+    '.gz': '/vsigzip/',
+}
+
+
+def _archive_vsi_prefix(path: str) -> str | None:
+    """Return the GDAL VSI prefix required to list inside an archive, or None."""
+    lower = path.lower()
+    for ext, prefix in _ARCHIVE_VSI_PREFIXES.items():
+        if lower.endswith(ext):
+            return prefix
+    return None
+
+
+def _listdir_one(path: str) -> tuple[list[str], list[str]]:
+    """List the immediate children of a single VFS path.
+
+    Args:
+        path: a VFS directory or file path
+
+    Returns:
+        A 2-tuple of ``(child_dirs, leaf_files)``. If *path* is a listable
+        directory, *child_dirs* contains its entries and *leaf_files* is empty.
+        If *path* is a recognised archive format, *child_dirs* contains the
+        same path with the appropriate GDAL VSI prefix prepended. Otherwise
+        *path* is returned as a leaf file.
+
+    Raises:
+        FileNotFoundError: If *path* does not exist.
+    """
+    try:
+        subdirs = fiona.listdir(path)
+        # Don't use os.path.join here because vsi uri's require forward-slash,
+        # even on windows.
+        return [f'{path}/{entry}' for entry in subdirs], []
+    except FionaValueError as e:
+        if 'is not a directory' in str(e):
+            prefix = _archive_vsi_prefix(path)
+            if prefix:
+                return [prefix + path], []
+            return [], [path]
+        raise FileNotFoundError(f'No such file or directory: {path}') from e
+
+
+def _listdir_vfs_recursive(root: Path, max_workers: int = 16) -> list[str]:
     """Lists all files in Virtual File Systems (VFS) recursively.
+
+    Each BFS level is processed concurrently using a thread pool, so N sibling
+    directories cost one round-trip latency instead of N sequential ones.
 
     Args:
         root: directory to list. These must contain the prefix for the VFS
             (e.g., '/vsiaz/' or 'az://' for azure blob storage, or
             '/vsizip/' or 'zip://' for zipped archives).
+        max_workers: maximum number of concurrent directory-listing calls.
 
     Returns:
-        A list of all file paths matching filename_glob in the root VFS directory or its
-        subdirectories.
+        A list of all file paths in the root VFS directory or its subdirectories.
 
     Raises:
         FileNotFoundError: If root does not exist.
 
     .. versionadded:: 0.7
     """
-    dirs = [str(root)]
-    files = []
-    while dirs:
-        dir = dirs.pop()
-        try:
-            subdirs = fiona.listdir(dir)
-            # Don't use os.path.join here because vsi uri's require forward-slash,
-            # even on windows.
-            dirs.extend([f'{dir}/{subdir}' for subdir in subdirs])
-        except FionaValueError as e:
-            if 'is not a directory' in str(e):
-                files.append(dir)
-            else:
-                raise FileNotFoundError(f'No such file or directory: {dir}')
+    pending = [str(root)]
+    files: list[str] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while pending:
+            results = list(executor.map(_listdir_one, pending))
+            pending = []
+            for child_dirs, leaf_files in results:
+                pending.extend(child_dirs)
+                files.extend(leaf_files)
     return files
 
 
@@ -944,8 +993,9 @@ def _list_directory_recursive(root: Path, filename_glob: str) -> list[str]:
             # To match the behaviour of glob.iglob we silently return empty list
             # for non-existing root.
             pass
-        # Prefix glob with wildcard to ignore directories
-        files = fnmatch.filter(all_files, f'*{filename_glob}')
+        files = [
+            f for f in all_files if fnmatch.fnmatch(os.path.basename(f), filename_glob)
+        ]
     else:
         pathname = os.path.join(root, '**', filename_glob)
         files = glob.glob(pathname, recursive=True)

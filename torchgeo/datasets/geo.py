@@ -6,6 +6,7 @@
 import abc
 import fnmatch
 import functools
+import glob
 import os
 import pathlib
 import re
@@ -43,13 +44,14 @@ from .utils import (
     GeoSlice,
     Path,
     Sample,
-    _list_directory_recursive,
+    _listdir_vfs_recursive,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
     disambiguate_timestamp,
     lazy_import,
     merge_samples,
+    path_is_vsi,
 )
 
 
@@ -302,16 +304,53 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         print(f'Converting {self.__class__.__name__} res from {self.res} to {new_res}')
         self._res = new_res
 
+    @classmethod
+    def list_files(cls, path: str | os.PathLike[str]) -> list[str]:
+        """Return all files under *path* that match :attr:`filename_glob`.
+
+        Supports local directories, individual files, and VSI paths such as
+        cloud storage buckets and local archives (zip, tar, etc.).
+
+        Args:
+            path: local directory, local file, or VSI path
+
+        Returns:
+            Sorted list of matching file paths.
+
+        .. versionadded:: 0.7
+        """
+        files: set[str] = set()
+        if os.path.isdir(path):
+            pathname = os.path.join(path, '**', cls.filename_glob)
+            files = set(glob.iglob(pathname, recursive=True))
+        elif os.path.isfile(path) and fnmatch.fnmatch(
+            str(path), f'*{cls.filename_glob}'
+        ):
+            files = {str(path)}
+        elif path_is_vsi(path):
+            try:
+                all_files = _listdir_vfs_recursive(path)
+            except FileNotFoundError:
+                all_files = []
+            files = {
+                f
+                for f in all_files
+                if fnmatch.fnmatch(os.path.basename(f), cls.filename_glob)
+            }
+        return sorted(files)
+
     @property
     def files(self) -> list[str]:
         """A list of all files in the dataset.
+
+        Supports local directories, individual files, and VSI paths such as
+        cloud storage buckets and local archives (zip, tar, etc.).
 
         Returns:
             All files in the dataset.
 
         .. versionadded:: 0.5
         """
-        # Make iterable
         if isinstance(self.paths, str | os.PathLike):
             paths: Iterable[Path] = [cast(Path, self.paths)]
         else:
@@ -320,14 +359,31 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         # Using set to remove any duplicates if directories are overlapping
         files: set[str] = set()
         for path in paths:
-            if os.path.isfile(path) and fnmatch.fnmatch(
-                str(path), os.path.join('*', self.filename_glob)
+            if os.path.isdir(path):
+                pathname = os.path.join(path, '**', self.filename_glob)
+                files |= set(glob.iglob(pathname, recursive=True))
+            elif os.path.isfile(path) and fnmatch.fnmatch(
+                str(path), f'*{self.filename_glob}'
             ):
                 files.add(str(path))
-            elif files_found := set(
-                _list_directory_recursive(path, self.filename_glob)
-            ):
-                files |= files_found
+            elif path_is_vsi(path):
+                try:
+                    all_files = _listdir_vfs_recursive(path)
+                except FileNotFoundError:
+                    all_files = []
+                vsi_matches = {
+                    f
+                    for f in all_files
+                    if fnmatch.fnmatch(os.path.basename(f), self.filename_glob)
+                }
+                if vsi_matches:
+                    files |= vsi_matches
+                elif not hasattr(self, 'download'):
+                    warnings.warn(
+                        f"Could not find any relevant files for provided path '{path}'. "
+                        f'Path was ignored.',
+                        UserWarning,
+                    )
             elif not hasattr(self, 'download'):
                 warnings.warn(
                     f"Could not find any relevant files for provided path '{path}'. "
@@ -335,7 +391,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
                     UserWarning,
                 )
 
-        # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
 
