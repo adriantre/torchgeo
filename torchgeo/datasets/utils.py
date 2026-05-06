@@ -859,24 +859,22 @@ def quantile_normalization(
 
 
 def path_is_vsi(path: Path) -> bool:
-    """Checks if the given path is pointing to a Virtual File System.
+    """Checks if the given path uses a GDAL Virtual Subfile Interface (VSI) prefix.
 
     .. note::
        Does not check if the path exists, or if it is a dir or file.
 
-    VFS can for instance be Cloud Storage Blobs or zip-archives.
-    They will start with a prefix indicating this.
-    For examples of these, see references for the two accepted syntaxes.
+    VSI paths point to cloud storage blobs, archives, or other virtual sources.
+    GDAL accepts two syntaxes: ``/vsi<handler>/...`` and ``<scheme>://...``.
 
     * https://gdal.org/user/virtual_file_systems.html
     * https://rasterio.readthedocs.io/en/latest/topics/datasets.html
-    * https://commons.apache.org/proper/commons-vfs/filesystems.html
 
     Args:
         path: a directory or file
 
     Returns:
-        True if path is on a virtual file system, else False
+        True if *path* is a VSI path, False otherwise
 
     .. versionadded:: 0.6
     """
@@ -904,10 +902,10 @@ def _archive_vsi_prefix(path: str) -> str | None:
 
 
 def _listdir_one(path: str) -> tuple[list[str], list[str]]:
-    """List the immediate children of a single VFS path.
+    """List the immediate children of a single VSI path.
 
     Args:
-        path: a VFS directory or file path
+        path: a VSI directory or file path
 
     Returns:
         A 2-tuple of ``(child_dirs, leaf_files)``. If *path* is a listable
@@ -933,23 +931,23 @@ def _listdir_one(path: str) -> tuple[list[str], list[str]]:
         raise FileNotFoundError(f'No such file or directory: {path}') from e
 
 
-def listdir_vfs_recursive(root: Path, max_workers: int = 16) -> list[str]:
-    """Lists all files in Virtual File Systems (VFS) recursively.
+def listdir_vsi_recursive(root: Path, max_workers: int = 16) -> list[str]:
+    """Lists all files under a VSI path recursively.
 
     Each BFS level is processed concurrently using a thread pool, so N sibling
     directories cost one round-trip latency instead of N sequential ones.
 
     Args:
-        root: directory to list. These must contain the prefix for the VFS
-            (e.g., '/vsiaz/' or 'az://' for azure blob storage, or
-            '/vsizip/' or 'zip://' for zipped archives).
+        root: VSI path to list (e.g., ``/vsiaz/container/`` or ``az://container/``
+            for Azure Blob Storage, ``/vsizip/archive.zip`` or ``zip://archive.zip``
+            for zip archives).
         max_workers: maximum number of concurrent directory-listing calls.
 
     Returns:
-        A list of all file paths in the root VFS directory or its subdirectories.
+        A list of all file paths under *root*.
 
     Raises:
-        FileNotFoundError: If root does not exist.
+        FileNotFoundError: If *root* does not exist.
 
     .. versionadded:: 0.7
     """

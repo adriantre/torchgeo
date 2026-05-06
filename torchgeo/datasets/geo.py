@@ -49,7 +49,7 @@ from .utils import (
     convert_poly_coords,
     disambiguate_timestamp,
     lazy_import,
-    listdir_vfs_recursive,
+    listdir_vsi_recursive,
     merge_samples,
     path_is_vsi,
 )
@@ -329,7 +329,7 @@ class GeoDataset(Dataset[Sample], abc.ABC):
             files = {str(path)}
         elif path_is_vsi(path):
             try:
-                all_files = listdir_vfs_recursive(path)
+                all_files = listdir_vsi_recursive(path)
             except FileNotFoundError:
                 all_files = []
             files = {
