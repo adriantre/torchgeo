@@ -859,7 +859,7 @@ def quantile_normalization(
 
 
 def path_is_vsi(path: Path) -> bool:
-    """Checks if the given path uses a GDAL Virtual Subfile Interface (VSI) prefix.
+    """Checks if the given path uses a GDAL Virtual System Interface (VSI) prefix.
 
     .. note::
        Does not check if the path exists, or if it is a dir or file.

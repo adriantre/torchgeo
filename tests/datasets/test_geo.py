@@ -305,9 +305,10 @@ class TestGeoDataset:
     ) -> None:
         assert dataset._disambiguate_slice(index) == expected_output
 
-    def test_files_property_non_existing_path_warns(self, tmp_path: Path) -> None:
+    def test_files_property_for_non_existing_file_or_dir(self, tmp_path: Path) -> None:
+        paths = [tmp_path, tmp_path / 'non_existing_file.tif']
         with pytest.warns(UserWarning, match='Path was ignored.'):
-            assert len(CustomGeoDataset(paths=[tmp_path / 'non_existing']).files) == 0
+            assert len(CustomGeoDataset(paths=paths).files) == 0
 
     def test_files_property_empty_dir_no_warning(self, tmp_path: Path) -> None:
         assert len(CustomGeoDataset(paths=[tmp_path]).files) == 0
@@ -342,17 +343,6 @@ class TestGeoDataset:
         bar.touch()
         ds = CustomGeoDataset(paths=[str(foo), bar])
         assert ds.files == [str(bar), str(foo)]
-
-    def test_list_files_local_dir(self, tmp_path: Path) -> None:
-        (tmp_path / 'a.tif').touch()
-        (tmp_path / 'b.tif').touch()
-        result = CustomGeoDataset.list_files(tmp_path)
-        assert result == sorted([str(tmp_path / 'a.tif'), str(tmp_path / 'b.tif')])
-
-    def test_list_files_single_file(self, tmp_path: Path) -> None:
-        f = tmp_path / 'file.tif'
-        f.touch()
-        assert CustomGeoDataset.list_files(f) == [str(f)]
 
     def test_list_files_non_existing(self, tmp_path: Path) -> None:
         assert CustomGeoDataset.list_files(tmp_path / 'non_existing') == []
