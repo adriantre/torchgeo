@@ -9,7 +9,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
-import glob
+import glob as glob_module
 import hashlib
 import importlib
 import os
@@ -25,13 +25,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, TypeAlias, cast, overload
 
-import fiona
 import numpy as np
 import pandas as pd
+import pyogrio
 import rasterio
 import shapely.affinity
 import torch
-from fiona.errors import FionaValueError
 from pandas import Timedelta, Timestamp
 from rasterio import Affine
 from shapely import Geometry
@@ -859,99 +858,6 @@ def quantile_normalization(
     return torch.clamp(img, 0, 1)
 
 
-def path_is_vsi(path: Path) -> bool:
-    """Checks if the given path is pointing to a Virtual File System.
-
-    .. note::
-       Does not check if the path exists, or if it is a dir or file.
-
-    VFS can for instance be Cloud Storage Blobs or zip-archives.
-    They will start with a prefix indicating this.
-    For examples of these, see references for the two accepted syntaxes.
-
-    * https://gdal.org/user/virtual_file_systems.html
-    * https://rasterio.readthedocs.io/en/latest/topics/datasets.html
-    * https://commons.apache.org/proper/commons-vfs/filesystems.html
-
-    Args:
-        path: a directory or file
-
-    Returns:
-        True if path is on a virtual file system, else False
-
-    .. versionadded:: 0.6
-    """
-    return '://' in str(path) or str(path).startswith('/vsi')
-
-
-def _listdir_vfs_recursive(root: Path) -> list[str]:
-    """Lists all files in Virtual File Systems (VFS) recursively.
-
-    Args:
-        root: directory to list. These must contain the prefix for the VFS
-            (e.g., '/vsiaz/' or 'az://' for azure blob storage, or
-            '/vsizip/' or 'zip://' for zipped archives).
-
-    Returns:
-        A list of all file paths matching filename_glob in the root VFS directory or its
-        subdirectories.
-
-    Raises:
-        FileNotFoundError: If root does not exist.
-
-    .. versionadded:: 0.7
-    """
-    dirs = [str(root)]
-    files = []
-    while dirs:
-        dir = dirs.pop()
-        try:
-            subdirs = fiona.listdir(dir)
-            # Don't use os.path.join here because vsi uri's require forward-slash,
-            # even on windows.
-            dirs.extend([f'{dir}/{subdir}' for subdir in subdirs])
-        except FionaValueError as e:
-            if 'is not a directory' in str(e):
-                files.append(dir)
-            else:
-                raise FileNotFoundError(f'No such file or directory: {dir}')
-    return files
-
-
-def _list_directory_recursive(root: Path, filename_glob: str) -> list[str]:
-    """Lists files in directory recursively matching the given glob expression.
-
-    Also supports GDAL Virtual File Systems (VFS).
-
-    Args:
-        root: directory to list. For VFS these will have prefix
-            e.g. /vsiaz/ or az:// for azure blob storage
-        filename_glob: filename pattern to filter filenames
-
-    Returns:
-        A list of all file paths matching filename_glob in the root directory or its
-        subdirectories.
-
-    .. versionadded:: 0.7
-    """
-    files: list[str]
-    if path_is_vsi(root):
-        # Change type to match expected input to filter
-        all_files: list[str] = []
-        try:
-            all_files = _listdir_vfs_recursive(root)
-        except FileNotFoundError:
-            # To match the behaviour of glob.iglob we silently return empty list
-            # for non-existing root.
-            pass
-        # Prefix glob with wildcard to ignore directories
-        files = fnmatch.filter(all_files, f'*{filename_glob}')
-    else:
-        pathname = os.path.join(root, '**', filename_glob)
-        files = glob.glob(pathname, recursive=True)
-    return files
-
-
 def array_to_tensor(array: np.typing.NDArray[Any]) -> Tensor:
     """Converts a :class:`numpy.ndarray` to :class:`torch.Tensor`.
 
@@ -1063,3 +969,54 @@ def convert_poly_coords(
         ],
     )
     return xformed_shape
+
+
+def list_vsi_files(root: Path) -> list[str]:
+    """Lists all files under a VSI path recursively.
+
+    Args:
+        root: VSI path to list (e.g., ``/vsiaz/container/`` for Azure Blob
+            Storage, ``/vsizip/archive.zip`` for zip archives).
+
+    Returns:
+        A list of all file paths under *root*, or an empty list if *root*
+        does not exist.
+
+    .. versionadded:: 0.9
+    """
+    try:
+        entries = pyogrio.vsi_listtree(str(root))
+    except NotADirectoryError:
+        return [str(root)]
+    except FileNotFoundError:
+        return []
+    return [e for e in entries if not e.endswith('/')]
+
+
+def find_files(path: Path, filename_glob: str = '*') -> list[str]:
+    """Return all files under *path* that match *filename_glob*.
+
+    Supports local directories, individual files, and VSI paths such as
+    cloud storage buckets and local archives (zip, tar, etc.).
+
+    Args:
+        path: local directory, local file, or VSI path.
+        filename_glob: glob pattern to match filenames against.
+
+    Returns:
+        Sorted list of matching file paths.
+
+    .. versionadded:: 0.9
+    """
+    files: set[str] = set()
+    if os.path.isdir(path):
+        pathname = os.path.join(path, '**', filename_glob)
+        files = set(glob_module.iglob(pathname, recursive=True))
+    elif os.path.isfile(path) and fnmatch.fnmatch(str(path), f'*{filename_glob}'):
+        files = {str(path)}
+    elif str(path).startswith('/vsi'):
+        all_files = list_vsi_files(path)
+        files = {
+            f for f in all_files if fnmatch.fnmatch(os.path.basename(f), filename_glob)
+        }
+    return sorted(files)

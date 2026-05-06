@@ -4,7 +4,6 @@
 """Base classes for all :mod:`torchgeo` datasets."""
 
 import abc
-import fnmatch
 import functools
 import os
 import pathlib
@@ -43,11 +42,11 @@ from .utils import (
     GeoSlice,
     Path,
     Sample,
-    _list_directory_recursive,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
     disambiguate_timestamp,
+    find_files,
     lazy_import,
     merge_samples,
 )
@@ -306,12 +305,14 @@ class GeoDataset(Dataset[Sample], abc.ABC):
     def files(self) -> list[str]:
         """A list of all files in the dataset.
 
+        Supports local directories, individual files, and VSI paths such as
+        cloud storage buckets and archives (zip, tar, etc.).
+
         Returns:
             All files in the dataset.
 
         .. versionadded:: 0.5
         """
-        # Make iterable
         if isinstance(self.paths, str | os.PathLike):
             paths: Iterable[Path] = [cast(Path, self.paths)]
         else:
@@ -320,22 +321,16 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         # Using set to remove any duplicates if directories are overlapping
         files: set[str] = set()
         for path in paths:
-            if os.path.isfile(path) and fnmatch.fnmatch(
-                str(path), os.path.join('*', self.filename_glob)
-            ):
-                files.add(str(path))
-            elif files_found := set(
-                _list_directory_recursive(path, self.filename_glob)
-            ):
-                files |= files_found
-            elif not hasattr(self, 'download'):
+            found = set(find_files(path, self.filename_glob))
+            if found:
+                files.update(found)
+            elif not os.path.isdir(path) and not hasattr(self, 'download'):
                 warnings.warn(
                     f"Could not find any relevant files for provided path '{path}'. "
                     f'Path was ignored.',
                     UserWarning,
                 )
 
-        # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
 
