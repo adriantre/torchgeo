@@ -4,7 +4,6 @@
 import os
 import shutil
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +12,7 @@ from _pytest.tmpdir import TempPathFactory
 from pytest import MonkeyPatch
 
 import torchgeo.datasets.utils
-from torchgeo.datasets.utils import Executable, which
+from torchgeo.datasets.utils import Executable, Path, which
 
 
 def copy(url: str, root: Path, *args: Any, **kwargs: Any) -> None:
