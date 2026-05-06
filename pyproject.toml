@@ -39,8 +39,6 @@ classifiers = [
 dependencies = [
     # einops 0.3+ required for einops.repeat
     "einops>=0.3",
-    # fiona 1.9+ required for fiona.listdir (VFS support)
-    "fiona>=1.9",
     # geopandas 1.0+ required to use pyogrio backend instead of Fiona (unmaintained)
     "geopandas>=1.0",
     # jsonargparse 4.35+ required for Python 3.12.8+ support
@@ -64,6 +62,8 @@ dependencies = [
     "pandas>=2.1.1",
     # pillow 10+ required for Python 3.12 wheels
     "pillow>=10",
+    # pyogrio 0.10+ required for pyogrio.vsi_listtree (VSI support)
+    "pyogrio>=0.10",
     # pyproj 3.6.1+ required for Python 3.12 wheels
     "pyproj>=3.6.1",
     # rasterio 1.4+ required for rasterio.merge.merge support for positive y-resolution

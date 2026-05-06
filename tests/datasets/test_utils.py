@@ -25,6 +25,7 @@ from torchgeo.datasets.utils import (
     download_and_extract_archive,
     download_url,
     extract_archive,
+    find_files,
     lazy_import,
     merge_samples,
     pad_across_batches,
@@ -627,3 +628,29 @@ def test_pad_across_batches() -> None:
     assert out['image'].shape[1] == 5
     assert out['bbox_xyxy'].shape[0] == len(batch)
     assert out['label'].shape[0] == len(batch)
+
+
+class TestListFiles:
+    def test_local_dir(self, tmp_path: Path) -> None:
+        f = tmp_path / 'file.tif'
+        f.touch()
+        assert find_files(tmp_path) == [str(f)]
+        assert find_files(f) == [str(f)]
+
+    def test_non_existing(self, tmp_path: Path) -> None:
+        assert find_files(tmp_path / 'non_existing') == []
+
+    @pytest.mark.parametrize(
+        'temp_archive', [os.path.join('tests', 'data', 'vector')], indirect=True
+    )
+    def test_vsi(self, temp_archive: tuple[str, str]) -> None:
+        dir_not_zipped, dir_zipped = temp_archive
+        filename = 'vector_2024.geojson'
+        found_in_zip = find_files(f'/vsizip/{dir_zipped}')
+        found_local = find_files(dir_not_zipped)
+        assert [Path(p).name for p in found_in_zip] == [
+            Path(p).name for p in found_local
+        ]
+        found = find_files(f'/vsizip/{dir_zipped}/{filename}')
+        assert len(found) == 1
+        assert str(found[0]).endswith(filename)

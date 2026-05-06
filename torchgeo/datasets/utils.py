@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import bz2
 import contextlib
+import fnmatch
+import glob as glob_module
 import hashlib
 import importlib
 import os
@@ -19,18 +21,16 @@ import urllib.request
 import warnings
 import zipfile
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, TypeAlias, cast, overload
 
-import fiona
 import numpy as np
 import pandas as pd
+import pyogrio
 import rasterio
 import shapely.affinity
 import torch
-from fiona.errors import FionaValueError
 from pandas import Timedelta, Timestamp
 from rasterio import Affine
 from shapely import Geometry
@@ -858,111 +858,6 @@ def quantile_normalization(
     return torch.clamp(img, 0, 1)
 
 
-def path_is_vsi(path: Path) -> bool:
-    """Checks if the given path uses a GDAL Virtual System Interface (VSI) prefix.
-
-    .. note::
-       Does not check if the path exists, or if it is a dir or file.
-
-    VSI paths point to cloud storage blobs, archives, or other virtual sources.
-    GDAL accepts two syntaxes: ``/vsi<handler>/...`` and ``<scheme>://...``.
-
-    * https://gdal.org/user/virtual_file_systems.html
-    * https://rasterio.readthedocs.io/en/latest/topics/datasets.html
-
-    Args:
-        path: a directory or file
-
-    Returns:
-        True if *path* is a VSI path, False otherwise
-
-    .. versionadded:: 0.6
-    """
-    return '://' in str(path) or str(path).startswith('/vsi')
-
-
-# Maps file extensions to GDAL VSI archive prefixes, ordered longest-first so that
-# compound extensions like .tar.gz are matched before their suffix (.gz).
-_ARCHIVE_VSI_PREFIXES: dict[str, str] = {
-    '.tar.gz': '/vsitar/vsigzip/',
-    '.tgz': '/vsitar/vsigzip/',
-    '.tar': '/vsitar/',
-    '.zip': '/vsizip/',
-    '.gz': '/vsigzip/',
-}
-
-
-def _archive_vsi_prefix(path: str) -> str | None:
-    """Return the GDAL VSI prefix required to list inside an archive, or None."""
-    lower = path.lower()
-    for ext, prefix in _ARCHIVE_VSI_PREFIXES.items():
-        if lower.endswith(ext):
-            return prefix
-    return None
-
-
-def _listdir_one(path: str) -> tuple[list[str], list[str]]:
-    """List the immediate children of a single VSI path.
-
-    Args:
-        path: a VSI directory or file path
-
-    Returns:
-        A 2-tuple of ``(child_dirs, leaf_files)``. If *path* is a listable
-        directory, *child_dirs* contains its entries and *leaf_files* is empty.
-        If *path* is a recognised archive format, *child_dirs* contains the
-        same path with the appropriate GDAL VSI prefix prepended. Otherwise
-        *path* is returned as a leaf file.
-
-    Raises:
-        FileNotFoundError: If *path* does not exist.
-    """
-    try:
-        subdirs = fiona.listdir(path)
-        # Don't use os.path.join here because vsi uri's require forward-slash,
-        # even on windows.
-        return [f'{path}/{entry}' for entry in subdirs], []
-    except FionaValueError as e:
-        if 'is not a directory' in str(e):
-            prefix = _archive_vsi_prefix(path)
-            if prefix:
-                return [prefix + path], []
-            return [], [path]
-        raise FileNotFoundError(f'No such file or directory: {path}') from e
-
-
-def listdir_vsi_recursive(root: Path, max_workers: int = 16) -> list[str]:
-    """Lists all files under a VSI path recursively.
-
-    Each BFS level is processed concurrently using a thread pool, so N sibling
-    directories cost one round-trip latency instead of N sequential ones.
-
-    Args:
-        root: VSI path to list (e.g., ``/vsiaz/container/`` or ``az://container/``
-            for Azure Blob Storage, ``/vsizip/archive.zip`` or ``zip://archive.zip``
-            for zip archives).
-        max_workers: maximum number of concurrent directory-listing calls.
-
-    Returns:
-        A list of all file paths under *root*.
-
-    Raises:
-        FileNotFoundError: If *root* does not exist.
-
-    .. versionadded:: 0.7
-    """
-    pending = [str(root)]
-    files: list[str] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while pending:
-            results = list(executor.map(_listdir_one, pending))
-            pending = []
-            for child_dirs, leaf_files in results:
-                pending.extend(child_dirs)
-                files.extend(leaf_files)
-    return files
-
-
 def array_to_tensor(array: np.typing.NDArray[Any]) -> Tensor:
     """Converts a :class:`numpy.ndarray` to :class:`torch.Tensor`.
 
@@ -1074,3 +969,54 @@ def convert_poly_coords(
         ],
     )
     return xformed_shape
+
+
+def list_vsi_files(root: Path) -> list[str]:
+    """Lists all files under a VSI path recursively.
+
+    Args:
+        root: VSI path to list (e.g., ``/vsiaz/container/`` for Azure Blob
+            Storage, ``/vsizip/archive.zip`` for zip archives).
+
+    Returns:
+        A list of all file paths under *root*, or an empty list if *root*
+        does not exist.
+
+    .. versionadded:: 0.9
+    """
+    try:
+        entries = pyogrio.vsi_listtree(str(root))
+    except NotADirectoryError:
+        return [str(root)]
+    except FileNotFoundError:
+        return []
+    return [e for e in entries if not e.endswith('/')]
+
+
+def find_files(path: Path, filename_glob: str = '*') -> list[str]:
+    """Return all files under *path* that match *filename_glob*.
+
+    Supports local directories, individual files, and VSI paths such as
+    cloud storage buckets and local archives (zip, tar, etc.).
+
+    Args:
+        path: local directory, local file, or VSI path.
+        filename_glob: glob pattern to match filenames against.
+
+    Returns:
+        Sorted list of matching file paths.
+
+    .. versionadded:: 0.9
+    """
+    files: set[str] = set()
+    if os.path.isdir(path):
+        pathname = os.path.join(path, '**', filename_glob)
+        files = set(glob_module.iglob(pathname, recursive=True))
+    elif os.path.isfile(path) and fnmatch.fnmatch(str(path), f'*{filename_glob}'):
+        files = {str(path)}
+    elif str(path).startswith('/vsi'):
+        all_files = list_vsi_files(path)
+        files = {
+            f for f in all_files if fnmatch.fnmatch(os.path.basename(f), filename_glob)
+        }
+    return sorted(files)

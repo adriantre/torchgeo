@@ -4,9 +4,7 @@
 """Base classes for all :mod:`torchgeo` datasets."""
 
 import abc
-import fnmatch
 import functools
-import glob
 import os
 import pathlib
 import re
@@ -48,10 +46,9 @@ from .utils import (
     concat_samples,
     convert_poly_coords,
     disambiguate_timestamp,
+    find_files,
     lazy_import,
-    listdir_vsi_recursive,
     merge_samples,
-    path_is_vsi,
 )
 
 
@@ -304,41 +301,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         print(f'Converting {self.__class__.__name__} res from {self.res} to {new_res}')
         self._res = new_res
 
-    @classmethod
-    def list_files(cls, path: str | os.PathLike[str]) -> list[str]:
-        """Return all files under *path* that match :attr:`filename_glob`.
-
-        Supports local directories, individual files, and VSI paths such as
-        cloud storage buckets and local archives (zip, tar, etc.).
-
-        Args:
-            path: local directory, local file, or VSI path
-
-        Returns:
-            Sorted list of matching file paths.
-
-        .. versionadded:: 0.7
-        """
-        files: set[str] = set()
-        if os.path.isdir(path):
-            pathname = os.path.join(path, '**', cls.filename_glob)
-            files = set(glob.iglob(pathname, recursive=True))
-        elif os.path.isfile(path) and fnmatch.fnmatch(
-            str(path), f'*{cls.filename_glob}'
-        ):
-            files = {str(path)}
-        elif path_is_vsi(path):
-            try:
-                all_files = listdir_vsi_recursive(path)
-            except FileNotFoundError:
-                all_files = []
-            files = {
-                f
-                for f in all_files
-                if fnmatch.fnmatch(os.path.basename(f), cls.filename_glob)
-            }
-        return sorted(files)
-
     @property
     def files(self) -> list[str]:
         """A list of all files in the dataset.
@@ -359,7 +321,7 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         # Using set to remove any duplicates if directories are overlapping
         files: set[str] = set()
         for path in paths:
-            found = type(self).list_files(path)
+            found = set(find_files(path, self.filename_glob))
             if found:
                 files.update(found)
             elif not os.path.isdir(path) and not hasattr(self, 'download'):
@@ -369,7 +331,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
                     UserWarning,
                 )
 
-        # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
 
