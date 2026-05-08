@@ -982,7 +982,7 @@ def list_vsi_files(root: Path) -> list[str]:
         A list of all file paths under *root*, or an empty list if *root*
         does not exist.
 
-    .. versionadded:: 0.9
+    .. versionadded:: 0.10
     """
     try:
         entries = pyogrio.vsi_listtree(str(root))
@@ -1006,7 +1006,7 @@ def find_files(path: Path, filename_glob: str = '*') -> list[str]:
     Returns:
         Sorted list of matching file paths.
 
-    .. versionadded:: 0.9
+    .. versionadded:: 0.10
     """
     files: set[str] = set()
     if os.path.isdir(path):
