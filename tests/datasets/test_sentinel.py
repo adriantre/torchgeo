@@ -10,14 +10,14 @@ import pyproj
 import pytest
 import rasterio
 import shapely
-import shapely.ops
 import shapely.wkt
 import torch
 import torch.nn as nn
 from _pytest.fixtures import SubRequest
+from geopandas import GeoSeries
+from geopandas.testing import assert_geoseries_equal
 from rasterio import DatasetReader
 from rasterio.vrt import WarpedVRT
-from shapely import Polygon
 
 from torchgeo.datasets import (
     DatasetNotFoundError,
@@ -168,27 +168,38 @@ class TestSentinel2:
     def test_float_res(self, dataset: Sentinel2) -> None:
         Sentinel2(dataset.paths, res=10.0, bands=dataset.bands)
 
+    @pytest.mark.parametrize('crs', [None, pyproj.CRS('EPSG:3857')])
+    def test_true_footprint_from_metadata(self, crs: pyproj.CRS | None) -> None:
+        root = os.path.join('tests', 'data', 'sentinel2')
+        ds = Sentinel2(root, res=(10.0, 10.0), crs=crs, bands=['B02'])
+
+        def read_footprint_wkt(filepath: str) -> str:
+            metadata_path = filepath.split('GRANULE')[0] + 'MTD_MSIL1C.xml'
+            with rasterio.open(metadata_path) as src:
+                return src.tags()['FOOTPRINT']
+
+        expected = GeoSeries(
+            ds.index['filepath'].map(read_footprint_wkt).map(shapely.wkt.loads),
+            crs='EPSG:4326',
+        ).to_crs(ds.crs)
+        assert_geoseries_equal(ds.index.geometry, expected)
+
     @pytest.mark.parametrize(
         'dataset_type', [DatasetReader, WarpedVRT]
     )  # WarpedVRT is produced when CRS requires reprojection
-    @pytest.mark.parametrize(
-        'metadata_exists,has_footprint_tag',
-        [(True, True), (True, False), (False, False)],
-    )
-    def test_footprint_from_datasource(
+    @pytest.mark.parametrize('metadata_exists', [True, False])
+    def test_footprint_falls_back_to_bbox(
         self,
         dataset: Sentinel2,
         monkeypatch: pytest.MonkeyPatch,
         dataset_type: type[DatasetReader] | type[WarpedVRT],
         metadata_exists: bool,
-        has_footprint_tag: bool,
     ) -> None:
-        footprint_wkt = dataset.index.geometry.to_crs(4326).values[0].wkt
         filepath = next(iter(dataset.files))
 
         class FakeMetadataSrc:
             def tags(self) -> dict[str, str]:
-                return {'FOOTPRINT': footprint_wkt} if has_footprint_tag else {}
+                return {}
 
             def __enter__(self) -> 'FakeMetadataSrc':
                 return self
@@ -211,14 +222,4 @@ class TestSentinel2:
             src_dataset.close()
         real_src.close()
 
-        if has_footprint_tag:
-            transformer = pyproj.Transformer.from_crs(
-                pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
-            ).transform
-            expected = shapely.ops.transform(
-                transformer, shapely.wkt.loads(footprint_wkt)
-            )
-            assert isinstance(result, Polygon)
-            assert result.equals_exact(expected, tolerance=1e-9)
-        else:
-            assert result.equals_exact(shapely.box(*bounds), tolerance=1e-9)  # type: ignore[arg-type]
+        assert result.equals_exact(shapely.box(*bounds), tolerance=1e-9)  # type: ignore[arg-type]
