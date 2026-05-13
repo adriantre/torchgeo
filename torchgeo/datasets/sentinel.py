@@ -503,8 +503,6 @@ class Sentinel2(Sentinel):
             return super()._footprint_from_datasource(dataset)
         with rasterio.open(metadata_path) as metadata_src:
             tags = metadata_src.tags()
-        if 'FOOTPRINT' not in tags:
-            return super()._footprint_from_datasource(dataset)
         true_footprint = shapely.wkt.loads(tags['FOOTPRINT'])
         transformer = pyproj.Transformer.from_crs(
             pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True

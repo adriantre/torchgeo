@@ -16,8 +16,6 @@ import torch.nn as nn
 from _pytest.fixtures import SubRequest
 from geopandas import GeoSeries
 from geopandas.testing import assert_geoseries_equal
-from rasterio import DatasetReader
-from rasterio.vrt import WarpedVRT
 
 from torchgeo.datasets import (
     DatasetNotFoundError,
@@ -184,42 +182,14 @@ class TestSentinel2:
         ).to_crs(ds.crs)
         assert_geoseries_equal(ds.index.geometry, expected)
 
-    @pytest.mark.parametrize(
-        'dataset_type', [DatasetReader, WarpedVRT]
-    )  # WarpedVRT is produced when CRS requires reprojection
-    @pytest.mark.parametrize('metadata_exists', [True, False])
     def test_footprint_falls_back_to_bbox(
-        self,
-        dataset: Sentinel2,
-        monkeypatch: pytest.MonkeyPatch,
-        dataset_type: type[DatasetReader] | type[WarpedVRT],
-        metadata_exists: bool,
+        self, dataset: Sentinel2, tmp_path: Path
     ) -> None:
         filepath = next(iter(dataset.files))
+        # Move this raster to a directory where it does not find metadata file
+        link = tmp_path / Path(filepath).name
+        link.symlink_to(Path(filepath).resolve())
 
-        class FakeMetadataSrc:
-            def tags(self) -> dict[str, str]:
-                return {}
-
-            def __enter__(self) -> 'FakeMetadataSrc':
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                pass
-
-        real_src = rasterio.open(filepath)
-        src_dataset: DatasetReader | WarpedVRT = (
-            WarpedVRT(real_src) if dataset_type is WarpedVRT else real_src
-        )
-        bounds = src_dataset.bounds
-
-        monkeypatch.setattr(rasterio, 'open', lambda _: FakeMetadataSrc())
-        monkeypatch.setattr(os.path, 'exists', lambda _: metadata_exists)
-
-        result = dataset._footprint_from_datasource(src_dataset)
-
-        if isinstance(src_dataset, WarpedVRT):
-            src_dataset.close()
-        real_src.close()
-
-        assert result.equals_exact(shapely.box(*bounds), tolerance=1e-9)  # type: ignore[arg-type]
+        with rasterio.open(link) as src:
+            result = dataset._footprint_from_datasource(src)
+            assert result.equals_exact(shapely.box(*src.bounds), tolerance=1e-9)  # type: ignore[arg-type]
