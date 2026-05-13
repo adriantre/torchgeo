@@ -34,17 +34,14 @@ def download_url(monkeypatch: MonkeyPatch, request: SubRequest) -> None:
 
 
 @pytest.fixture(scope='module')
-def module_tmp_path(tmp_path_factory: TempPathFactory) -> Path:
-    return tmp_path_factory.mktemp('module_tmp')
-
-
-@pytest.fixture(scope='module')
 def temp_archive(
-    request: SubRequest, module_tmp_path: Path
+    request: SubRequest, tmp_path_factory: TempPathFactory
 ) -> Generator[tuple[str, str], None, None]:
     dir_not_zipped = request.param
     dir_zipped = shutil.make_archive(
-        module_tmp_path / dir_not_zipped, 'zip', root_dir=dir_not_zipped
+        tmp_path_factory.mktemp('archive') / dir_not_zipped,
+        'zip',
+        root_dir=dir_not_zipped,
     )
     yield dir_not_zipped, dir_zipped
     os.remove(dir_zipped)

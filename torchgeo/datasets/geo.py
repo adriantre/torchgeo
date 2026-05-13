@@ -330,7 +330,7 @@ class GeoDataset(Dataset[Sample], abc.ABC):
                     f'Path was ignored.',
                     UserWarning,
                 )
-
+        # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
 
