@@ -311,9 +311,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
         Returns:
             All files in the dataset.
 
-        Raises:
-            DatasetNotFoundError: If dataset is not found.
-
         .. versionadded:: 0.5
         """
         if isinstance(self.paths, str | os.PathLike):
@@ -333,8 +330,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
                     f'Path was ignored.',
                     UserWarning,
                 )
-        if len(files) == 0 and not hasattr(self, 'download'):
-            raise DatasetNotFoundError(self)
         # Sort the output to enforce deterministic behavior.
         return sorted(files)
 

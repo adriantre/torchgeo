@@ -286,12 +286,10 @@ class TestGeoDataset:
     def test_files_property_for_non_existing_file_or_dir(self, tmp_path: Path) -> None:
         paths = [tmp_path, tmp_path / 'non_existing_file.tif']
         with pytest.warns(UserWarning, match='Path was ignored.'):
-            with pytest.raises(DatasetNotFoundError):
-                CustomGeoDataset(paths=paths).files
+            assert len(CustomGeoDataset(paths=paths).files) == 0
 
-    def test_files_property_empty_dir(self, tmp_path: Path) -> None:
-        with pytest.raises(DatasetNotFoundError):
-            CustomGeoDataset(paths=[tmp_path]).files
+    def test_files_property_empty_dir_no_warning(self, tmp_path: Path) -> None:
+        assert len(CustomGeoDataset(paths=[tmp_path]).files) == 0
 
     def test_files_property_ordered(self, tmp_path: Path) -> None:
         """Ensure that the list of files is ordered."""
@@ -330,10 +328,10 @@ class TestGeoDataset:
     def test_vsi_file_non_existing(self, temp_archive: tuple[str, str]) -> None:
         _, dir_zipped = temp_archive
         with pytest.warns(UserWarning, match='Path was ignored.'):
-            with pytest.raises(DatasetNotFoundError):
-                CustomGeoDataset(
-                    paths=f'/vsizip/{dir_zipped}/non_existing_file.tif'
-                ).files
+            files = CustomGeoDataset(
+                paths=f'/vsizip/{dir_zipped}/non_existing_file.tif'
+            ).files
+            assert len(files) == 0
 
     @pytest.mark.parametrize(
         'temp_archive',
