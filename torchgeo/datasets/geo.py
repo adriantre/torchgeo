@@ -330,6 +330,8 @@ class GeoDataset(Dataset[Sample], abc.ABC):
                     f'Path was ignored.',
                     UserWarning,
                 )
+        if len(files) == 0 and not hasattr(self, 'download'):
+            raise DatasetNotFoundError(self)
         # Sort the output to enforce deterministic behavior.
         return sorted(files)
 
