@@ -23,6 +23,7 @@ from .utils import (
     check_integrity,
     download_and_extract_archive,
     download_url,
+    find_files,
 )
 
 
@@ -147,10 +148,12 @@ class EuroCrops(VectorDataset):
             True if dataset files are found and/or MD5s match, else False
         """
         # Check if the extracted files already exist
-        if self.files and not self.checksum:
+        if (
+            find_files(self._download_root_path, self.filename_glob)
+            and not self.checksum
+        ):
             return True
 
-        assert isinstance(self.paths, str | os.PathLike)
         paths = cast(Path, self.paths)
 
         filepath = os.path.join(paths, self.hcat_fname)
@@ -168,16 +171,16 @@ class EuroCrops(VectorDataset):
         if self._check_integrity():
             print('Files already downloaded and verified')
             return
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
         download_url(
             self.base_url + self.hcat_fname,
-            paths,
+            self._download_root_path,
             md5=self.hcat_md5 if self.checksum else None,
         )
         for fname, md5 in self.zenodo_files:
             download_and_extract_archive(
-                self.base_url + fname, paths, md5=md5 if self.checksum else None
+                self.base_url + fname,
+                self._download_root_path,
+                md5=md5 if self.checksum else None,
             )
 
     def _load_class_map(self, classes: list[str] | None) -> None:
@@ -191,10 +194,8 @@ class EuroCrops(VectorDataset):
                 (defaults to all classes)
         """
         if not classes:
-            assert isinstance(self.paths, str | os.PathLike)
-            paths = cast(Path, self.paths)
             classes = []
-            filepath = os.path.join(paths, self.hcat_fname)
+            filepath = os.path.join(self._download_root_path, self.hcat_fname)
             with open(filepath) as f:
                 reader = csv.DictReader(f)
                 for row in reader:

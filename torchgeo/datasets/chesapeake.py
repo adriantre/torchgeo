@@ -26,7 +26,7 @@ from pyproj import CRS
 from .errors import DatasetNotFoundError
 from .geo import GeoDataset, RasterDataset
 from .nlcd import NLCD
-from .utils import GeoSlice, Path, Sample, download_url, extract_archive
+from .utils import GeoSlice, Path, Sample, download_url, extract_archive, find_files
 
 
 class Chesapeake(RasterDataset, ABC):
@@ -176,11 +176,10 @@ class Chesapeake(RasterDataset, ABC):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted file already exists
-        if self.files:
+        if find_files(self._download_root_path, self.filename_glob):
             return
 
         # Check if the zip file has already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
         paths = cast(Path, self.paths)
         if glob.glob(os.path.join(paths, '**', '*.zip'), recursive=True):
             self._extract()
@@ -196,17 +195,17 @@ class Chesapeake(RasterDataset, ABC):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
         for year, md5 in self.md5s.items():
             url = self.url.format(state=self.state, year=year)
-            download_url(url, paths, md5=md5 if self.checksum else None)
+            download_url(
+                url, self._download_root_path, md5=md5 if self.checksum else None
+            )
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
-        for file in glob.iglob(os.path.join(paths, '**', '*.zip'), recursive=True):
+        for file in glob.iglob(
+            os.path.join(self._download_root_path, '**', '*.zip'), recursive=True
+        ):
             extract_archive(file)
 
     def plot(

@@ -6,7 +6,7 @@
 import os
 import re
 from collections.abc import Callable, Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,7 +18,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError, RGBBandsMissingError
 from .geo import RasterDataset
-from .utils import GeoSlice, Path, Sample, which
+from .utils import GeoSlice, Path, Sample, find_files, which
 
 
 class AgriFieldNet(RasterDataset):
@@ -196,9 +196,6 @@ class AgriFieldNet(RasterDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
-
         x, y, t = self._disambiguate_slice(index)
         interval = pd.Interval(t.start, t.stop)
         df = self.index.iloc[self.index.index.overlaps(interval)]
@@ -229,7 +226,9 @@ class AgriFieldNet(RasterDataset):
         image = torch.cat(data_list, dim=-3)
 
         mask_filepaths = []
-        for root, dirs, files in os.walk(os.path.join(paths, 'train_labels')):
+        for root, dirs, files in os.walk(
+            os.path.join(self._download_root_path, 'train_labels')
+        ):
             for file in files:
                 if not file.endswith('_field_ids.tif') and file.endswith('.tif'):
                     file_path = os.path.join(root, file)
@@ -254,7 +253,7 @@ class AgriFieldNet(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the files already exist
-        if self.files:
+        if find_files(self._download_root_path, self.filename_glob):
             return
 
         # Check if the user requested to download the dataset
@@ -266,11 +265,9 @@ class AgriFieldNet(RasterDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
-        os.makedirs(paths, exist_ok=True)
+        os.makedirs(self._download_root_path, exist_ok=True)
         azcopy = which('azcopy')
-        azcopy('sync', f'{self.url}', paths, '--recursive=true')
+        azcopy('sync', f'{self.url}', self._download_root_path, '--recursive=true')
 
     def plot(
         self, sample: Sample, show_titles: bool = True, suptitle: str | None = None

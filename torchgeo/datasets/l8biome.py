@@ -214,18 +214,16 @@ class L8Biome(IntersectionDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
         for biome, md5 in self.md5s.items():
             download_url(
-                self.url.format(biome), paths, md5=md5 if self.checksum else None
+                self.url.format(biome),
+                self._download_root_path,
+                md5=md5 if self.checksum else None,
             )
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
-        pathname = os.path.join(paths, '*.tar.gz')
+        pathname = os.path.join(self._download_root_path, '*.tar.gz')
         for tarfile in glob.iglob(pathname):
             extract_archive(tarfile)
 
