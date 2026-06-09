@@ -55,6 +55,8 @@ class TestSemanticSegmentationTask:
             'chesapeake_cvpr_7',
             'cloud_cover',
             'deepglobelandcover',
+            'dlrsd',
+            'dlrsd_no_val',
             'etci2021',
             'ftw',
             'geonrw',
@@ -67,8 +69,6 @@ class TestSemanticSegmentationTask:
             'loveda',
             'mmflood',
             'naipchesapeake',
-            'pastis',
-            'pastis100',
             'potsdam2d',
             'sen12ms_all',
             'sen12ms_s1',
@@ -202,6 +202,17 @@ class TestSemanticSegmentationTask:
         # Test with None (default)
         task = SemanticSegmentationTask(num_classes=3)
         assert task.hparams['class_weights'] is None
+
+    def test_forward_deprecates_spatiotemporal_input(self) -> None:
+        task = SemanticSegmentationTask(model='fcn', in_channels=12, num_classes=3)
+        x = torch.randn(2, 4, 3, 16, 16)
+
+        with pytest.warns(
+            DeprecationWarning, match='Use SpatioTemporalSegmentationTask instead'
+        ):
+            y = task(x)
+
+        assert y.shape == (2, 3, 16, 16)
 
     def test_no_plot_method(self, monkeypatch: MonkeyPatch, fast_dev_run: bool) -> None:
         monkeypatch.setattr(SEN12MSDataModule, 'plot', plot)
