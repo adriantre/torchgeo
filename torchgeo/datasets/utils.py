@@ -985,8 +985,8 @@ def convert_poly_coords(
     return xformed_shape
 
 
-def list_vsi_files(root: Path) -> list[str]:
-    """Lists all files under a VSI path recursively.
+def _list_vsi_files(root: Path) -> list[str]:
+    """List all files under a VSI path recursively.
 
     Args:
         root: VSI path to list (e.g., ``/vsiaz/container/`` for Azure Blob
@@ -995,8 +995,6 @@ def list_vsi_files(root: Path) -> list[str]:
     Returns:
         A list of all file paths under *root*, or an empty list if *root*
         does not exist.
-
-    .. versionadded:: 0.10
     """
     try:
         entries = pyogrio.vsi_listtree(str(root))
@@ -1014,8 +1012,8 @@ def find_files(path: Path, filename_glob: str = '*') -> list[str]:
     cloud storage buckets and local archives (zip, tar, etc.).
 
     Args:
-        path: local directory, local file, or VSI path.
-        filename_glob: glob pattern to match filenames against.
+        path: Local directory, local file, or VSI path.
+        filename_glob: Glob pattern to match filenames against.
 
     Returns:
         Sorted list of matching file paths.
@@ -1029,7 +1027,7 @@ def find_files(path: Path, filename_glob: str = '*') -> list[str]:
     elif os.path.isfile(path) and fnmatch.fnmatch(str(path), f'*{filename_glob}'):
         files = {str(path)}
     elif str(path).startswith('/vsi'):
-        all_files = list_vsi_files(path)
+        all_files = _list_vsi_files(path)
         files = {
             f for f in all_files if fnmatch.fnmatch(os.path.basename(f), filename_glob)
         }
