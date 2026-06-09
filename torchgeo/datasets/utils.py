@@ -9,7 +9,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
-import glob as glob_module
+import glob
 import hashlib
 import importlib
 import os
@@ -1023,7 +1023,7 @@ def find_files(path: Path, filename_glob: str = '*') -> list[str]:
     files: set[str] = set()
     if os.path.isdir(path):
         pathname = os.path.join(path, '**', filename_glob)
-        files = set(glob_module.iglob(pathname, recursive=True))
+        files = set(glob.iglob(pathname, recursive=True))
     elif os.path.isfile(path) and fnmatch.fnmatch(str(path), f'*{filename_glob}'):
         files = {str(path)}
     elif str(path).startswith('/vsi'):

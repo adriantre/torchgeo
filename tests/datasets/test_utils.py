@@ -630,26 +630,40 @@ def test_pad_across_batches() -> None:
 
 
 class TestFindFiles:
-    def test_local_dir(self, tmp_path: Path) -> None:
-        f = tmp_path / 'file.tif'
-        f.touch()
-        assert find_files(tmp_path) == [str(f)]
-        assert find_files(f) == [str(f)]
+    # find_files resolves a local directory and a zip of that same directory
+    # identically, so both are tested against the same data.
+    vector_dir = os.path.join('tests', 'data', 'vector')
 
-    def test_non_existing(self, tmp_path: Path) -> None:
-        assert find_files(tmp_path / 'non_existing') == []
+    def test_file(self) -> None:
+        """A file resolves to itself."""
+        path = os.path.join(self.vector_dir, 'vector_2024.geojson')
+        assert find_files(path) == [path]
 
-    @pytest.mark.parametrize(
-        'temp_archive', [os.path.join('tests', 'data', 'vector')], indirect=True
-    )
-    def test_vsi(self, temp_archive: tuple[str, str]) -> None:
-        dir_not_zipped, dir_zipped = temp_archive
-        filename = 'vector_2024.geojson'
-        found_in_zip = find_files(f'/vsizip/{dir_zipped}')
-        found_local = find_files(dir_not_zipped)
-        assert [Path(p).name for p in found_in_zip] == [
-            Path(p).name for p in found_local
-        ]
-        found = find_files(f'/vsizip/{dir_zipped}/{filename}')
-        assert len(found) == 1
-        assert str(found[0]).endswith(filename)
+    def test_directory(self) -> None:
+        """A directory resolves to the files within it matching the glob."""
+        found = find_files(self.vector_dir, '*.geojson')
+        assert [Path(p).name for p in found] == ['vector_2024.geojson']
+
+    def test_non_existing(self) -> None:
+        """A path that does not exist resolves to nothing."""
+        assert find_files(os.path.join(self.vector_dir, 'non_existing')) == []
+
+    @pytest.mark.parametrize('temp_archive', [vector_dir], indirect=True)
+    def test_archive_file(self, temp_archive: tuple[str, str]) -> None:
+        """A file inside an archive resolves to itself."""
+        _, archive = temp_archive
+        found = find_files(f'/vsizip/{archive}/vector_2024.geojson')
+        assert [Path(p).name for p in found] == ['vector_2024.geojson']
+
+    @pytest.mark.parametrize('temp_archive', [vector_dir], indirect=True)
+    def test_archive(self, temp_archive: tuple[str, str]) -> None:
+        """An archive resolves to the files within it matching the glob."""
+        _, archive = temp_archive
+        found = find_files(f'/vsizip/{archive}', '*.geojson')
+        assert [Path(p).name for p in found] == ['vector_2024.geojson']
+
+    @pytest.mark.parametrize('temp_archive', [vector_dir], indirect=True)
+    def test_archive_non_existing(self, temp_archive: tuple[str, str]) -> None:
+        """A path that does not exist inside an archive resolves to nothing."""
+        _, archive = temp_archive
+        assert find_files(f'/vsizip/{archive}/non_existing.tif') == []

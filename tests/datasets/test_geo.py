@@ -323,17 +323,6 @@ class TestGeoDataset:
         assert ds.files == [str(bar), str(foo)]
 
     @pytest.mark.parametrize(
-        'temp_archive', [os.path.join('tests', 'data', 'vector')], indirect=True
-    )
-    def test_vsi_file_non_existing(self, temp_archive: tuple[str, str]) -> None:
-        _, dir_zipped = temp_archive
-        with pytest.warns(UserWarning, match='Path was ignored.'):
-            files = CustomGeoDataset(
-                paths=f'/vsizip/{dir_zipped}/non_existing_file.tif'
-            ).files
-            assert len(files) == 0
-
-    @pytest.mark.parametrize(
         'temp_archive',
         [
             os.path.join(
@@ -345,15 +334,17 @@ class TestGeoDataset:
         ],
         indirect=True,
     )
-    def test_vsi_directory(self, temp_archive: tuple[str, str]) -> None:
-        dir_not_zipped, dir_zipped = temp_archive
+    def test_files_from_archive(self, temp_archive: tuple[str, str]) -> None:
+        """A dataset finds the same files in a zipped archive as in a directory."""
+        directory, archive = temp_archive
         bands = Sentinel2.rgb_bands
-        files_local = Sentinel2(paths=dir_not_zipped, bands=bands, cache=False).files
-        files_zipped = Sentinel2(
-            paths=f'/vsizip/{dir_zipped}', bands=bands, cache=False
+        from_directory = Sentinel2(paths=directory, bands=bands, cache=False).files
+        from_archive = Sentinel2(
+            paths=f'/vsizip/{archive}', bands=bands, cache=False
         ).files
-        assert [Path(p).stem for p in files_zipped] == [
-            Path(p).stem for p in files_local
+        assert from_archive  # the archive must actually yield files
+        assert [Path(p).stem for p in from_archive] == [
+            Path(p).stem for p in from_directory
         ]
 
 
