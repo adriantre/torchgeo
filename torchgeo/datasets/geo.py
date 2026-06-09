@@ -305,9 +305,6 @@ class GeoDataset(Dataset[Sample], abc.ABC):
     def files(self) -> list[str]:
         """A list of all files in the dataset.
 
-        Supports local directories, individual files, and VSI paths such as
-        cloud storage buckets and archives (zip, tar, etc.).
-
         Returns:
             All files in the dataset.
 
