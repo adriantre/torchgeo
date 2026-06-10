@@ -16,9 +16,6 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        # Run in the locked uv environment so the ty version and type stubs
-        # always match pyproject.toml/uv.lock and CI, instead of a separate
-        # dependency list here that drifts out of sync.
         entry: uv run --locked --extra datasets --extra models --extra style --extra tests ty check
         language: system
         pass_filenames: false
