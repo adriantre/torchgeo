@@ -294,6 +294,23 @@ class SpatioTemporalSampler(GeoSampler):
                 msg += 'a different number of timestamps'
                 warnings.warn(msg, UserWarning)
 
+    def __len__(self) -> int:
+        """Length of each epoch.
+
+        Computed analytically for strategy combinations where the yield count
+        is fixed by the inner samplers' lengths.
+
+        Returns:
+            The total number of samples produced by one iteration.
+        """
+        match self.spatial_sampler.strategy, self.temporal_sampler.strategy:
+            case 'random', 'random':
+                return len(self.spatial_sampler)
+            case 'sequential', 'random':
+                return len(self.spatial_sampler) * len(self.temporal_sampler)
+            case _:
+                return super().__len__()
+
     def __iter__(self) -> Iterator[tuple[slice, slice, slice]]:
         """Iterate over generated sample locations for each epoch.
 
