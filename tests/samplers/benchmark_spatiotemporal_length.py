@@ -105,7 +105,7 @@ if __name__ == '__main__':
         ('sequential', 'sequential'),
         ('random', 'sequential'),
     ]:
-        for N in [100, 10_000]:  # , 1_000_000]:
+        for N in [100, 10_000]:
             creation, len_call, length = bench(*combo, N)
             print(
                 f'{combo[0] + "+" + combo[1]:25s} {N:>10d} {creation * 1000:>15.3f} {len_call * 1000:>20.3f} {length:>12d}'
