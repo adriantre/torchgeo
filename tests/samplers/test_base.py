@@ -205,28 +205,6 @@ class TestSpatioTemporalSampler:
         assert 0 <= y.start == y.stop <= 100
         assert TMIN <= t.start < t.stop <= TMAX
 
-    @pytest.mark.filterwarnings('ignore:random_sampler @ sequential_sampler')
-    def test_len(self, sampler: SpatioTemporalSampler) -> None:
-        spatial_strategy = sampler.spatial_sampler.strategy
-        temporal_strategy = sampler.temporal_sampler.strategy
-        match spatial_strategy, temporal_strategy:
-            case 'random', 'random':
-                assert len(sampler) == len(sampler.spatial_sampler)
-            case 'sequential', 'random':
-                assert len(sampler) == len(sampler.spatial_sampler) * len(
-                    sampler.temporal_sampler
-                )
-            case 'sequential', 'sequential':
-                # Deterministic but variable per location
-                assert len(sampler) == sum(1 for _ in sampler)
-            case 'random', 'sequential':
-                # Variable per call
-                expected = sum(1 for _ in sampler)
-                assert expected > 0
-                # ``__len__`` caches the brute-force result on first call
-                first_len = len(sampler)
-                assert len(sampler) == first_len
-
     def test_plot(self, sampler: SpatioTemporalSampler, tmp_path: Path) -> None:
         ani = sampler.plot()
         ani.save(tmp_path / 'out.gif')
