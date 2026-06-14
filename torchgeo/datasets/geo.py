@@ -551,6 +551,8 @@ class RasterDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
+        out_crs = self.crs
+
         if self.separate_files:
             data_list: list[Tensor] = []
             for band in self.bands:
@@ -558,10 +560,14 @@ class RasterDataset(GeoDataset):
                 for filepath in df.filepath:
                     filepath = self._update_filepath(band, filepath)
                     band_filepaths.append(filepath)
-                data_list.append(self._merge_or_stack(band_filepaths, index))
+                data_list.append(
+                    self._merge_or_stack(band_filepaths, index, out_crs=out_crs)
+                )
             data = torch.cat(data_list, dim=-3)
         else:
-            data = self._merge_or_stack(df.filepath, index, self.band_indexes)
+            data = self._merge_or_stack(
+                df.filepath, index, self.band_indexes, out_crs=out_crs
+            )
 
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
@@ -632,6 +638,7 @@ class RasterDataset(GeoDataset):
         filepaths: Sequence[str],
         index: GeoSlice,
         band_indexes: Sequence[int] | None = None,
+        out_crs: CRS | None = None,
     ) -> Tensor:
         """Load and combine one or more files.
 
@@ -642,14 +649,18 @@ class RasterDataset(GeoDataset):
             filepaths: one or more files to load and merge
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
             band_indexes: indexes of bands to be used
+            out_crs: :term:`coordinate reference system (CRS)` to warp to
+                (defaults to :attr:`crs`). Files already in this CRS are read
+                without warping.
 
         Returns:
             image/mask at that index
         """
+        out_crs = out_crs or self.crs
         if self.cache:
-            vrt_fhs = [self._cached_load_warp_file(fp) for fp in filepaths]
+            vrt_fhs = [self._cached_load_warp_file(fp, out_crs) for fp in filepaths]
         else:
-            vrt_fhs = [self._load_warp_file(fp) for fp in filepaths]
+            vrt_fhs = [self._load_warp_file(fp, out_crs) for fp in filepaths]
 
         x, y, _ = self._disambiguate_slice(index)
         kwargs = {
@@ -669,16 +680,17 @@ class RasterDataset(GeoDataset):
         return tensor
 
     @functools.lru_cache(maxsize=128)
-    def _cached_load_warp_file(self, filepath: Path) -> DatasetReader:
+    def _cached_load_warp_file(self, filepath: Path, crs: CRS) -> DatasetReader:
         """Cached version of :meth:`_load_warp_file`.
 
         Args:
             filepath: file to load and warp
+            crs: :term:`coordinate reference system (CRS)` to warp to
 
         Returns:
             file handle of warped VRT
         """
-        return self._load_warp_file(filepath)
+        return self._load_warp_file(filepath, crs)
 
     def _load_warp_file(self, filepath: Path, crs: CRS | None = None) -> DatasetReader:
         """Load and warp a file to the correct CRS and resolution.
@@ -913,7 +925,9 @@ class XarrayDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
-        image = self._merge_files(df.filepath, index)
+        out_crs = self.crs
+
+        image = self._merge_files(df.filepath, index, out_crs=out_crs)
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
@@ -926,12 +940,16 @@ class XarrayDataset(GeoDataset):
 
         return sample
 
-    def _merge_files(self, filepaths: Sequence[str], index: GeoSlice) -> Tensor:
+    def _merge_files(
+        self, filepaths: Sequence[str], index: GeoSlice, out_crs: CRS
+    ) -> Tensor:
         """Load and merge one or more files.
 
         Args:
             filepaths: one or more files to load and merge
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: :term:`coordinate reference system (CRS)` to reproject to. Files
+                already in this CRS are read without reprojection.
 
         Returns:
             image at that index
@@ -951,16 +969,17 @@ class XarrayDataset(GeoDataset):
                     xr.open_dataset(filepath, decode_times=True, decode_coords='all')
                 )
 
+                # A CRS-less source is assumed to already be in the dataset CRS
                 if src.rio.crs is None:
                     src = src.rio.write_crs(self.crs)
 
-                if src.rio.crs != self.crs or res != src.rio.resolution():
-                    src = src.rio.reproject(self.crs, resolution=res)
+                if src.rio.crs != out_crs or res != src.rio.resolution():
+                    src = src.rio.reproject(out_crs, resolution=res)
 
                 datasets.append(src)
 
             dataset = rioxr.merge.merge_datasets(
-                datasets, bounds=bounds, res=res, nodata=0, crs=self.crs
+                datasets, bounds=bounds, res=res, nodata=0, crs=out_crs
             )
             dataset = dataset.sel(time=t)
 
