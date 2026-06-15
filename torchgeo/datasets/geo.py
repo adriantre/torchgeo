@@ -31,7 +31,7 @@ from rasterio.enums import Resampling
 from rasterio.io import DatasetReader
 from rasterio.transform import Affine, array_bounds, from_gcps
 from rasterio.vrt import WarpedVRT
-from rasterio.warp import calculate_default_transform
+from rasterio.warp import calculate_default_transform, transform_bounds
 from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision.datasets import ImageFolder
@@ -98,6 +98,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     index: GeoDataFrame
     paths: Path | Iterable[Path]
     _res = (0.0, 0.0)
+    _prefer_native_crs = False
 
     #: Glob expression used to search for files.
     #:
@@ -170,6 +171,50 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             t.step,
         ]
         return torch.tensor(bounds)
+
+    def _select_out_crs(self, df: GeoDataFrame) -> CRS:
+        """Choose the CRS to read a query into.
+
+        If :attr:`_prefer_native_crs` is set and every file matched by a query
+        shares a single native CRS, that CRS is returned so the data can be read
+        without warping. Otherwise the index CRS is used.
+
+        Args:
+            df: The rows of :attr:`index` matched by a query.
+
+        Returns:
+            The :term:`coordinate reference system (CRS)` to read into.
+        """
+        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
+            native = CRS.from_user_input(df['native_crs'].iloc[0])
+            if native != self.crs:
+                return native
+        return self.crs
+
+    def _reproject_slice(
+        self, index: GeoSlice, out_crs: CRS
+    ) -> tuple[slice, slice, slice]:
+        """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
+
+        The spatial bounds are reprojected to their envelope in *out_crs* and the
+        resolution is derived to preserve the pixel dimensions of the query.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: :term:`coordinate reference system (CRS)` to reproject into.
+
+        Returns:
+            The reprojected slice in *out_crs*.
+        """
+        x, y, t = self._disambiguate_slice(index)
+        left, bottom, right, top = transform_bounds(
+            self.crs, out_crs, x.start, y.start, x.stop, y.stop
+        )
+        width = round((x.stop - x.start) / x.step)
+        height = round((y.stop - y.start) / y.step)
+        xstep = (right - left) / width
+        ystep = (top - bottom) / height
+        return slice(left, right, xstep), slice(bottom, top, ystep), t
 
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
@@ -428,6 +473,7 @@ class RasterDataset(GeoDataset):
         transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
         time_series: bool = False,
+        prefer_native_crs: bool = False,
     ) -> None:
         """Initialize a new RasterDataset instance.
 
@@ -447,10 +493,18 @@ class RasterDataset(GeoDataset):
                 (``is_image=False``), single-band data may have the channel
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
+            prefer_native_crs: if True, queries whose files all share a single
+                native CRS are read in that CRS without warping, instead of the
+                index CRS. Ignored if *crs* is specified. Samples may then be
+                returned in different CRSs, which is unsuitable for stitching
+                gridded predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.10
+           The *prefer_native_crs* parameter.
 
         .. versionadded:: 0.9
            The *time_series* parameter.
@@ -463,6 +517,7 @@ class RasterDataset(GeoDataset):
         self.transforms = transforms
         self.cache = cache
         self.time_series = time_series
+        self._prefer_native_crs = prefer_native_crs and crs is None
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
@@ -555,7 +610,10 @@ class RasterDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
-        out_crs = self.crs
+        out_crs = self._select_out_crs(df)
+        if out_crs != self.crs:
+            index = self._reproject_slice(index, out_crs)
+            x, y, t = self._disambiguate_slice(index)
 
         if self.separate_files:
             data_list: list[Tensor] = []
@@ -835,6 +893,7 @@ class XarrayDataset(GeoDataset):
         res: float | tuple[float, float] | None = None,
         data_vars: Sequence[str] | None = None,
         transforms: Callable[[Sample], Sample] | None = None,
+        prefer_native_crs: bool = False,
     ) -> None:
         """Initialize a new XarrayDataset instance.
 
@@ -848,14 +907,23 @@ class XarrayDataset(GeoDataset):
                 (defaults to all variables of the first file found)
             transforms: a function/transform that takes an input sample
                 and returns a transformed version
+            prefer_native_crs: if True, queries whose files all share a single
+                native CRS are read in that CRS without warping, instead of the
+                index CRS. Ignored if *crs* is specified. Samples may then be
+                returned in different CRSs, which is unsuitable for stitching
+                gridded predictions back together.
 
         Raises:
             DatasetNotFoundError: If dataset is not found.
             DependencyNotFoundError: If rioxarray is not installed.
+
+        .. versionadded:: 0.10
+           The *prefer_native_crs* parameter.
         """
         lazy_import('rioxarray')
         xr = lazy_import('xarray')
         self.paths = paths
+        self._prefer_native_crs = prefer_native_crs and crs is None
         self.transforms = transforms
 
         # Gather information about the dataset
@@ -932,7 +1000,10 @@ class XarrayDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
-        out_crs = self.crs
+        out_crs = self._select_out_crs(df)
+        if out_crs != self.crs:
+            index = self._reproject_slice(index, out_crs)
+            x, y, t = self._disambiguate_slice(index)
 
         image = self._merge_files(df.filepath, index, out_crs=out_crs)
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
@@ -1479,6 +1550,9 @@ class IntersectionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         # Spatial intersection
         index1 = dataset1.index.reset_index()
@@ -1648,6 +1722,9 @@ class UnionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         self.index = pd.concat([dataset1.index, dataset2.index])  # ty: ignore[invalid-assignment]
 

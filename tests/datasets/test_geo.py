@@ -492,6 +492,46 @@ class TestRasterDataset:
         assert isinstance(warped, WarpedVRT)
         assert warped.crs != native.crs
 
+    def test_prefer_native_crs_flag(self) -> None:
+        assert NAIP(self.naip_dir)._prefer_native_crs is False
+        assert NAIP(self.naip_dir, prefer_native_crs=True)._prefer_native_crs is True
+        # An explicit CRS pins the output CRS, disabling native preference
+        pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+
+    def test_select_out_crs(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Native CRS equals index CRS: no warp needed
+        assert ds._select_out_crs(ds.index) == ds.crs
+
+        # All files share a single foreign native CRS: read in that CRS
+        foreign = ds.index.copy()
+        foreign['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(foreign) == CRS.from_epsg(4326)
+
+        # Mixed native CRSs: fall back to the index CRS
+        mixed = foreign.copy()
+        mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(mixed) == ds.crs
+
+        # Disabled when prefer_native_crs is False
+        assert NAIP(self.naip_dir)._select_out_crs(foreign) == ds.crs
+
+    def test_prefer_native_crs_reprojects(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS
+        ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        sample = ds[ds.bounds]
+        # Output is reprojected into the foreign CRS (longitude degrees)
+        assert abs(sample['bounds'][0].item()) <= 360
+
+    def test_intersection_unpins_native_crs(self) -> None:
+        ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds2 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds1 & ds2
+        assert ds1._prefer_native_crs is False
+        assert ds2._prefer_native_crs is False
+
     @pytest.mark.parametrize('dtype', ['uint16', 'uint32'])
     def test_getitem_uint_dtype(self, dtype: str) -> None:
         root = os.path.join('tests', 'data', 'raster', dtype)
@@ -603,6 +643,17 @@ class TestXarrayDataset:
 
     def test_native_crs_column(self, dataset: XarrayDataset) -> None:
         assert dataset.index['native_crs'].notna().all()
+
+    def test_prefer_native_crs_reprojects(self) -> None:
+        pytest.importorskip('h5py', minversion='3.10')
+        # Build a fresh dataset to avoid mutating the class-scoped fixture
+        ds = XarrayDataset(
+            os.path.join('tests', 'data', 'hdf5'), prefer_native_crs=True
+        )
+        # Simulate all files sharing a foreign native CRS
+        ds.index['native_crs'] = CRS.from_epsg(3857)  # ty: ignore[invalid-assignment]
+        sample = ds[ds.bounds]
+        assert isinstance(sample['image'], torch.Tensor)
 
     def test_and(self, dataset: XarrayDataset) -> None:
         ds = dataset & dataset
