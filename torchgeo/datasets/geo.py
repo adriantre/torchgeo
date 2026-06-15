@@ -472,6 +472,7 @@ class RasterDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
+        native_crss = []
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -486,7 +487,10 @@ class RasterDataset(GeoDataset):
                             pass
                     if crs is None:
                         crs = vrt.crs
+                    with rasterio.open(filepath) as src:
+                        native_crs = src.crs or src.gcps[1]
                     geometries.append(shapely.box(*vrt.bounds))
+                    native_crss.append(native_crs)
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -524,7 +528,7 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {'filepath': filepaths}
+        data = {'filepath': filepaths, 'native_crs': native_crss}
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 
@@ -858,10 +862,12 @@ class XarrayDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
+        native_crss = []
         for filepath in self.files:
             try:
                 with xr.open_dataset(filepath, decode_coords='all') as src:
                     crs = crs or src.rio.crs or CRS.from_epsg(4326)
+                    native_crs = src.rio.crs or crs
                     res = res or src.rio.resolution()
                     data_vars = data_vars or list(src.data_vars.keys())
                     tmin = pd.Timestamp(src.time.values.min())
@@ -881,6 +887,7 @@ class XarrayDataset(GeoDataset):
                     filepaths.append(filepath)
                     datetimes.append((tmin, tmax))
                     geometries.append(shapely.box(*src.rio.bounds()))
+                    native_crss.append(native_crs)
             except (OSError, ValueError):
                 # Skip files that xarray is unable to read
                 continue
@@ -898,7 +905,7 @@ class XarrayDataset(GeoDataset):
             self.data_vars = data_vars
 
         # Create the dataset index
-        data = {'filepath': filepaths}
+        data = {'filepath': filepaths, 'native_crs': native_crss}
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 

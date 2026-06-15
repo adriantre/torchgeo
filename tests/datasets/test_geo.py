@@ -468,6 +468,16 @@ class TestRasterDataset:
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
 
+    def test_native_crs_column(self) -> None:
+        native = NAIP(self.naip_dir)
+        # Without reprojection, the native CRS matches the index CRS
+        assert (native.index['native_crs'] == native.crs).all()
+
+        # After reprojection, the index CRS changes but the native CRS does not
+        reprojected = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
+        assert reprojected.crs != native.crs
+        assert (reprojected.index['native_crs'] == native.crs).all()
+
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)
         filepath = ds.files[0]
@@ -590,6 +600,9 @@ class TestXarrayDataset:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
         assert isinstance(x['image'], torch.Tensor)
+
+    def test_native_crs_column(self, dataset: XarrayDataset) -> None:
+        assert dataset.index['native_crs'].notna().all()
 
     def test_and(self, dataset: XarrayDataset) -> None:
         ds = dataset & dataset
