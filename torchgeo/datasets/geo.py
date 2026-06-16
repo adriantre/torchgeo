@@ -572,6 +572,7 @@ class RasterDataset(GeoDataset):
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
+            'crs': out_crs,
             'transform': torch.tensor(transform),
         }
 
@@ -931,6 +932,7 @@ class XarrayDataset(GeoDataset):
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
+            'crs': out_crs,
             'image': image,
             'transform': torch.tensor(transform),
         }
@@ -1248,6 +1250,7 @@ class VectorDataset(GeoDataset):
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
+            'crs': out_crs,
             'transform': torch.tensor(transform),
         }
 
