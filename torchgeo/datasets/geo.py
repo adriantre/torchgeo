@@ -1147,6 +1147,8 @@ class VectorDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
+        out_crs = self.crs
+
         shapes = []
         for filepath in df.filepath:
             if pathlib.Path(filepath).suffix.lower() == '.parquet':
@@ -1154,13 +1156,13 @@ class VectorDataset(GeoDataset):
             else:
                 src = gpd.read_file(filepath, layer=self.layer)
 
-            # We need to know the bounding box of the index in the source CRS
-            transformer = pyproj.Transformer.from_crs(self.crs, src.crs, always_xy=True)
+            # We need to know the bounding box of the query in the source CRS
+            transformer = pyproj.Transformer.from_crs(out_crs, src.crs, always_xy=True)
             (minx, miny) = transformer.transform(x.start, y.start)
             (maxx, maxy) = transformer.transform(x.stop, y.stop)
 
             src = src.cx[minx:maxx, miny:maxy]
-            src.to_crs(self.crs, inplace=True)
+            src.to_crs(out_crs, inplace=True)
 
             # Get label values to use for rendering each geometry
             labels = np.array(
