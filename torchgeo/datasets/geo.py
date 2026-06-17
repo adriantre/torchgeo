@@ -1670,9 +1670,6 @@ class IntersectionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
-        # Children must share a grid so samples can be combined
-        dataset1._prefer_native_crs = False
-        dataset2._prefer_native_crs = False
 
         # Spatial intersection
         index1 = dataset1.index.reset_index()
@@ -1686,7 +1683,9 @@ class IntersectionDataset(GeoDataset):
 
         # Remove duplicate columns with a suffix
         # Pandas does not allow suffixes of suffixes
+        # native_crs/native_res are per-child; children read via their own index
         columns = ['filepath_1', 'filepath_2']
+        columns += [c for c in self.index.columns if c.startswith('native_')]
         self.index.drop(columns=columns, inplace=True, errors='ignore')
 
         name = 'datetime'
@@ -1711,6 +1710,24 @@ class IntersectionDataset(GeoDataset):
                 msg += ' if you want to ignore temporal intersection'
                 raise RuntimeError(msg)
 
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[CRS, tuple[float, float] | None]:
+        """Resolve the shared read grid for all children from the anchor dataset.
+
+        The anchor is the first (left-most) dataset; every child is read onto its
+        grid. This is the CRS/anchor *voting* seam: override to use a different
+        policy, e.g. anchor on the child with the finest ground resolution by
+        comparing each child's ``native_res`` instead of taking the left-most.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The CRS and (optional) native resolution to read every child into.
+        """
+        return self.datasets[0]._resolve_out_crs(index)
+
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
 
@@ -1723,8 +1740,37 @@ class IntersectionDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        # All datasets are guaranteed to have a valid index
-        samples = [ds[index] for ds in self.datasets]
+        return self._getitem(index)
+
+    def _getitem(
+        self,
+        index: GeoSlice,
+        out_crs: CRS | None = None,
+        out_res: tuple[float, float] | None = None,
+    ) -> Sample:
+        """Retrieve and combine a sample, reading all children onto one grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS to read every child into (defaults to the anchor's choice).
+            out_res: Resolution in units of *out_crs*.
+
+        Returns:
+            Sample of input, target, and/or metadata at that index.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        if out_crs is None:
+            out_crs, out_res = self._resolve_out_crs(index)
+
+        # All datasets are guaranteed to have a valid index. Use the public
+        # __getitem__ when a child is already at the shared CRS (honors subclass
+        # overrides); only the native-CRS path needs _getitem.
+        samples = [
+            ds[index] if out_crs == ds.crs else ds._getitem(index, out_crs, out_res)
+            for ds in self.datasets
+        ]
 
         sample = self.collate_fn(samples)
 
@@ -1842,11 +1888,36 @@ class UnionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
-        # Children must share a grid so samples can be combined
-        dataset1._prefer_native_crs = False
-        dataset2._prefer_native_crs = False
 
         self.index = pd.concat([dataset1.index, dataset2.index])  # ty: ignore[invalid-assignment]
+
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[CRS, tuple[float, float] | None]:
+        """Resolve the shared read grid from the first child with data.
+
+        The anchor is the first (left-most) dataset that has data for the query;
+        every child is read onto its grid. This is the CRS/anchor *voting* seam:
+        override to use a different policy, e.g. anchor on the child with the finest
+        ground resolution by comparing each child's ``native_res``.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The CRS and (optional) native resolution to read every child into.
+
+        Raises:
+            IndexError: If *index* is not found in any dataset.
+        """
+        for ds in self.datasets:
+            try:
+                return ds._resolve_out_crs(index)
+            except IndexError:
+                continue
+        raise IndexError(
+            f'index: {index} not found in dataset with bounds: {self.bounds}'
+        )
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
@@ -1860,13 +1931,45 @@ class UnionDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        # Not all datasets are guaranteed to have a valid index
+        return self._getitem(index)
+
+    def _getitem(
+        self,
+        index: GeoSlice,
+        out_crs: CRS | None = None,
+        out_res: tuple[float, float] | None = None,
+    ) -> Sample:
+        """Retrieve and merge a sample, reading all children onto one grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS to read every child into (defaults to the anchor's choice).
+            out_res: Resolution in units of *out_crs*.
+
+        Returns:
+            Sample of input, target, and/or metadata at that index.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        # Not all datasets are guaranteed to have a valid index. The first child
+        # with data sets the shared grid (unless a parent passed one). Use the
+        # public __getitem__ when a child is already at that CRS (honors subclass
+        # overrides); only the native-CRS path needs _getitem.
         samples = []
         for ds in self.datasets:
             try:
-                samples.append(ds[index])
+                crs, res = (
+                    (out_crs, out_res)
+                    if out_crs is not None
+                    else ds._resolve_out_crs(index)
+                )
+                samples.append(
+                    ds[index] if crs == ds.crs else ds._getitem(index, crs, res)
+                )
             except IndexError:
-                pass
+                continue
+            out_crs, out_res = crs, res
 
         if not samples:
             raise IndexError(

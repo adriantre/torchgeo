@@ -188,6 +188,16 @@ class TestGeoDataset:
         assert isinstance(dataset, UnionDataset)
         assert len(dataset) == 4
 
+    def test_or_nested_disjoint(self) -> None:
+        # A nested union whose inner datasets have no data at the query is skipped
+        ds1 = CustomGeoDataset()
+        ds2 = CustomGeoDataset()
+        ds3 = CustomGeoDataset(bounds=[(10, 11, 12, 13, MINT, MAXT)])
+        dataset = (ds1 | ds2) | ds3
+        index = (slice(10, 11, 1), slice(12, 13, 1), slice(MINT, MAXT, 1))
+        sample = dataset[index]
+        assert isinstance(sample['bounds'], Tensor)
+
     def test_str(self, dataset: GeoDataset) -> None:
         out = str(dataset)
         assert 'type: GeoDataset' in out
@@ -538,12 +548,30 @@ class TestRasterDataset:
         assert sample['bounds'][5].item() == 3.0
         assert sample['image'].shape[-2:] == (size, size)
 
-    def test_intersection_unpins_native_crs(self) -> None:
-        ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
-        ds2 = NAIP(self.naip_dir, prefer_native_crs=True)
-        ds1 & ds2
-        assert ds1._prefer_native_crs is False
-        assert ds2._prefer_native_crs is False
+    def test_combine_reads_anchor_native_crs(self) -> None:
+        # Combined datasets read every child onto the left-most (anchor) child's
+        # native grid. Simulate the anchor having a foreign native CRS + res.
+        size = 8
+
+        def query(ds: GeoDataset) -> GeoSlice:
+            x, y, t = ds.bounds
+            return (
+                slice(x.start, x.start + size * x.step, x.step),
+                slice(y.start, y.start + size * y.step, y.step),
+                t,
+            )
+
+        for combine in (NAIP.__and__, NAIP.__or__):
+            ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+            ds2 = NAIP(self.naip_dir)
+            combined = combine(ds1, ds2)
+            n = len(ds1.index)
+            ds1.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+            ds1.index['native_res'] = [(2.0, 3.0)] * n  # ty: ignore[invalid-assignment]
+
+            sample = combined[query(combined)]
+            assert sample['crs'] == CRS.from_epsg(4326)
+            assert sample['image'].shape[-2:] == (size, size)
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)
