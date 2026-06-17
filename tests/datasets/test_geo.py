@@ -124,6 +124,15 @@ class TestGeoDataset:
         assert isinstance(sample, dict)
         assert isinstance(sample['bounds'], Tensor)
 
+    def test_getitem_foreign_crs(self, dataset: GeoDataset) -> None:
+        index = (slice(0, 1, 1), slice(2, 3, 1), slice(MINT, MAXT, 1))
+        # Reading into its own CRS defers to __getitem__
+        assert isinstance(dataset._getitem(index, out_crs=dataset.crs), dict)
+        # A dataset that can't read into an arbitrary CRS refuses loudly rather
+        # than silently misaligning when combined onto another CRS.
+        with pytest.raises(NotImplementedError, match='non-native CRS'):
+            dataset._getitem(index, out_crs=CRS.from_epsg(4326))
+
     def test_len(self, dataset: GeoDataset) -> None:
         assert len(dataset) == 1
 
@@ -711,6 +720,16 @@ class TestVectorDataset:
         assert isinstance(x['mask'], torch.Tensor)
         assert torch.equal(x['mask'].unique(), torch.tensor([0, 1], dtype=torch.uint8))
         assert x['crs'] == dataset.crs
+
+    def test_getitem_foreign_crs(self, dataset: CustomVectorDataset) -> None:
+        # Rasterize into a caller-specified CRS (used when combined onto another
+        # dataset's grid)
+        dataset.task = 'semantic_segmentation'
+        out_crs = CRS.from_epsg(32631)
+        assert dataset.crs != out_crs
+        x = dataset._getitem(dataset.bounds, out_crs=out_crs, out_res=(10.0, 10.0))
+        assert isinstance(x['mask'], torch.Tensor)
+        assert x['crs'] == out_crs
 
     def test_getitem_obj_det(self, dataset: CustomVectorDataset) -> None:
         dataset.task = 'object_detection'

@@ -222,6 +222,52 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         bottom, top = cy - height * yres / 2, cy + height * yres / 2
         return slice(left, right, xres), slice(bottom, top, yres), t
 
+    def _query_index(self, index: GeoSlice) -> GeoDataFrame:
+        """Find the files in :attr:`index` matched by a query.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The matched rows of :attr:`index`, in the index CRS.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        x, y, t = self._disambiguate_slice(index)
+        interval = pd.Interval(t.start, t.stop)
+        df = self.index.iloc[self.index.index.overlaps(interval)]
+        df = df.iloc[:: t.step]
+        df = df.cx[x.start : x.stop, y.start : y.stop]
+
+        if df.empty:
+            raise IndexError(
+                f'index: {index} not found in dataset with bounds: {self.bounds}'
+            )
+
+        return df
+
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[CRS, tuple[float, float] | None]:
+        """Resolve the CRS and resolution to read a query into.
+
+        Used by :class:`IntersectionDataset`/:class:`UnionDataset` to pick a shared
+        grid for all children. For a single dataset this is the CRS/resolution its
+        own files would be read in.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            A tuple of the CRS to read into and, when reading natively, the native
+            resolution in that CRS (else ``None``).
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        return self._select_out_crs(self._query_index(index))
+
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
@@ -235,6 +281,38 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
+
+    def _getitem(
+        self,
+        index: GeoSlice,
+        out_crs: CRS | None = None,
+        out_res: tuple[float, float] | None = None,
+    ) -> Sample:
+        """Retrieve a sample, optionally on a caller-specified grid.
+
+        :class:`IntersectionDataset`/:class:`UnionDataset` call this on each child
+        to read them onto one shared grid. The default ignores *out_crs*/*out_res*
+        and defers to :meth:`__getitem__`; subclasses that can read into an
+        arbitrary CRS override it.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS to read into (defaults to the dataset's own CRS).
+            out_res: Resolution in units of *out_crs*.
+
+        Returns:
+            Sample of input, target, and/or metadata at that index.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+            NotImplementedError: If asked to read into a CRS this dataset cannot honor.
+        """
+        if out_crs is not None and out_crs != self.crs:
+            raise NotImplementedError(
+                f'{type(self).__name__} cannot read into a non-native CRS; '
+                'override _getitem to support CRS-aligned combination.'
+            )
+        return self[index]
 
     def __and__(self, other: 'GeoDataset') -> 'IntersectionDataset':
         """Take the intersection of two :class:`GeoDataset`.
@@ -614,21 +692,42 @@ class RasterDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
+        return self._getitem(index)
 
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
+    def _getitem(
+        self,
+        index: GeoSlice,
+        out_crs: CRS | None = None,
+        out_res: tuple[float, float] | None = None,
+    ) -> Sample:
+        """Retrieve a sample, optionally reading into a caller-specified grid.
+
+        When *out_crs* is None, the CRS/resolution are chosen from this dataset's
+        own files. :class:`IntersectionDataset`/:class:`UnionDataset` pass an
+        *out_crs*/*out_res* so every child reads onto one shared grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS to read into (defaults to the dataset's own choice).
+            out_res: Resolution in units of *out_crs* (required if *out_crs* is set
+                to a CRS that differs from the index CRS).
+
+        Returns:
+            Sample of input, target, and/or metadata at that index.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        df = self._query_index(index)
+
+        if out_crs is None:
+            out_crs, out_res = self._select_out_crs(df)
+        if out_crs != self.crs:
+            index = self._reproject_slice(
+                index, out_crs, cast(tuple[float, float], out_res)
             )
 
-        out_crs, out_res = self._select_out_crs(df)
-        if out_res is not None:
-            index = self._reproject_slice(index, out_crs, out_res)
-            x, y, t = self._disambiguate_slice(index)
+        x, y, _ = self._disambiguate_slice(index)
 
         if self.separate_files:
             data_list: list[Tensor] = []
@@ -643,7 +742,7 @@ class RasterDataset(GeoDataset):
             data = torch.cat(data_list, dim=-3)
         else:
             data = self._merge_or_stack(
-                df.filepath, index, self.band_indexes, out_crs=out_crs
+                list(df.filepath), index, self.band_indexes, out_crs=out_crs
             )
 
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
@@ -992,20 +1091,13 @@ class XarrayDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
-            )
-
+        # XarrayDataset reprojects the whole source, so it stays at the index CRS;
+        # native-CRS reads are not yet supported (see :meth:`GeoDataset._getitem`).
+        df = self._query_index(index)
         out_crs = self.crs
+        x, y, _ = self._disambiguate_slice(index)
 
-        image = self._merge_files(df.filepath, index, out_crs=out_crs)
+        image = self._merge_files(list(df.filepath), index, out_crs=out_crs)
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
@@ -1215,18 +1307,42 @@ class VectorDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
+        return self._getitem(index)
 
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
+    def _getitem(
+        self,
+        index: GeoSlice,
+        out_crs: CRS | None = None,
+        out_res: tuple[float, float] | None = None,
+    ) -> Sample:
+        """Retrieve a sample, optionally rasterizing into a caller-specified grid.
+
+        See :meth:`RasterDataset._getitem`. :class:`IntersectionDataset`/
+        :class:`UnionDataset` pass an *out_crs*/*out_res* so this dataset rasterizes
+        onto the same grid as the other children.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS to rasterize into (defaults to the index CRS).
+            out_res: Resolution in units of *out_crs* (required if *out_crs* differs
+                from the index CRS).
+
+        Returns:
+            Sample of input, target, and/or metadata at that index.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        df = self._query_index(index)
+
+        if out_crs is None:
+            out_crs, out_res = self._select_out_crs(df)
+        if out_crs != self.crs:
+            index = self._reproject_slice(
+                index, out_crs, cast(tuple[float, float], out_res)
             )
 
-        out_crs = self.crs
+        x, y, _ = self._disambiguate_slice(index)
 
         shapes = []
         for filepath in df.filepath:
