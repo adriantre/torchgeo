@@ -18,7 +18,6 @@ import geopandas as gpd
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import pyproj
 import rasterio
 import rasterio.features
 import rasterio.merge
@@ -43,6 +42,7 @@ from .utils import (
     GeoSlice,
     Path,
     Sample,
+    _cached_transformer,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -215,7 +215,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         x, y, t = self._disambiguate_slice(index)
         width = round((x.stop - x.start) / x.step)
         height = round((y.stop - y.start) / y.step)
-        transformer = pyproj.Transformer.from_crs(self.crs, out_crs, always_xy=True)
+        transformer = _cached_transformer(self.crs, out_crs)
         cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
         xres, yres = out_res
         left, right = cx - width * xres / 2, cx + width * xres / 2
@@ -1234,7 +1234,7 @@ class VectorDataset(GeoDataset):
                 src = gpd.read_file(filepath, layer=self.layer)
 
             # We need to know the bounding box of the query in the source CRS
-            transformer = pyproj.Transformer.from_crs(out_crs, src.crs, always_xy=True)
+            transformer = _cached_transformer(out_crs, src.crs)
             (minx, miny) = transformer.transform(x.start, y.start)
             (maxx, maxy) = transformer.transform(x.stop, y.stop)
 
