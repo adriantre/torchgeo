@@ -585,9 +585,11 @@ class RasterDataset(GeoDataset):
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
                 native CRS are read in that CRS, at its native resolution,
-                without warping, instead of the index CRS. Ignored if *crs* is
-                specified. Samples may then be returned in different CRSs, which
-                is unsuitable for stitching gridded predictions back together.
+                without warping. The index then uses a global equal-area CRS
+                (EPSG:6933) for bookkeeping rather than the first file's CRS, so
+                the dataset stays valid across UTM zones. Ignored if *crs* is
+                specified. Samples may be returned in different CRSs, which is
+                unsuitable for stitching gridded predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -608,6 +610,12 @@ class RasterDataset(GeoDataset):
         self.cache = cache
         self.time_series = time_series
         self._prefer_native_crs = prefer_native_crs and crs is None
+
+        # When reading natively, the index CRS is pure bookkeeping, so use a global
+        # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This
+        # keeps the index valid across UTM zones and area-weighted sampling uniform.
+        if self._prefer_native_crs:
+            crs = CRS.from_epsg(6933)
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
