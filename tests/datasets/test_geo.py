@@ -532,23 +532,26 @@ class TestRasterDataset:
 
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
-        # Native CRS equals index CRS: no native read
-        assert ds._select_out_crs(ds.index) == (ds.crs, None)
+        # Native reads use a global equal-area index CRS (EASE-Grid 2.0)
+        assert ds.crs == CRS.from_epsg(6933)
 
-        # All files share a single foreign native CRS: read in that CRS and res
-        foreign = ds.index.copy()
-        foreign['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
-        out_crs, out_res = ds._select_out_crs(foreign)
-        assert out_crs == CRS.from_epsg(4326)
-        assert out_res == ds.index['native_res'].iloc[0]
+        # Files differ from the index CRS: read in their shared native CRS and res
+        native = CRS.from_user_input(ds.index['native_crs'].iloc[0])
+        assert ds._select_out_crs(ds.index) == (native, ds.index['native_res'].iloc[0])
+
+        # Files already in the index CRS: no reprojection
+        same = ds.index.copy()
+        same['native_crs'] = ds.crs  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(same) == (ds.crs, None)
 
         # Mixed native CRSs: fall back to the index CRS
-        mixed = foreign.copy()
+        mixed = ds.index.copy()
         mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
         assert ds._select_out_crs(mixed) == (ds.crs, None)
 
         # Disabled when prefer_native_crs is False
-        assert NAIP(self.naip_dir)._select_out_crs(foreign) == (ds.crs, None)
+        off = NAIP(self.naip_dir)
+        assert off._select_out_crs(off.index) == (off.crs, None)
 
     def test_prefer_native_crs_native_res(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
@@ -600,10 +603,13 @@ class TestRasterDataset:
         size = 8
 
         def query(ds: GeoDataset) -> GeoSlice:
+            # Centered, so the box stays inside each child's footprint (the
+            # combined bounds can differ from a child's by sub-pixel amounts)
             x, y, t = ds.bounds
+            cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
             return (
-                slice(x.start, x.start + size * x.step, x.step),
-                slice(y.start, y.start + size * y.step, y.step),
+                slice(cx, cx + size * x.step, x.step),
+                slice(cy, cy + size * y.step, y.step),
                 t,
             )
 
