@@ -194,7 +194,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             native resolution in that CRS (else ``None``).
         """
         if self._prefer_native_crs and df['native_crs'].nunique() == 1:
-            native = CRS.from_user_input(df['native_crs'].iloc[0])
+            native = df['native_crs'].iloc[0]
             if native != self.crs:
                 return native, df['native_res'].iloc[0]
         return self.crs, None
@@ -566,7 +566,9 @@ class RasterDataset(GeoDataset):
                         with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
                             crs = PROJ_CRS.from_user_input(vrt.crs)
                     with rasterio.open(filepath) as src:
-                        native_crs = src.crs or src.gcps[1]
+                        # Normalize to a pyproj CRS once here so the per-query read
+                        # path can compare/transform without reconverting (~54 us each).
+                        native_crs = CRS.from_user_input(src.crs or src.gcps[1])
                         native_res = src.res
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
