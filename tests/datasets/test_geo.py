@@ -521,10 +521,15 @@ class TestRasterDataset:
         same['native_crs'] = ds.crs  # ty: ignore[invalid-assignment]
         assert ds._select_out_crs(same) == (ds.crs, None)
 
-        # Mixed native CRSs: fall back to the index CRS
-        mixed = ds.index.copy()
-        mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
-        assert ds._select_out_crs(mixed) == (ds.crs, None)
+        # Mixed native CRSs: the majority native CRS wins
+        mixed = pd.concat([ds.index, ds.index.iloc[[0]]])
+        mixed['native_crs'] = [  # ty: ignore[invalid-assignment]
+            CRS.from_epsg(4326),
+            CRS.from_epsg(32631),
+            CRS.from_epsg(4326),
+        ]
+        out_crs, _ = ds._select_out_crs(mixed)
+        assert out_crs == CRS.from_epsg(4326)
 
         # Disabled when prefer_native_crs is False
         off = NAIP(self.naip_dir)

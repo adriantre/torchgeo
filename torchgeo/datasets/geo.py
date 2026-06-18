@@ -177,22 +177,24 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     ) -> tuple[CRS, tuple[float, float] | None]:
         """Choose the CRS and resolution to read a query into.
 
-        If :attr:`_prefer_native_crs` is set and every file matched by a query
-        shares a single native CRS that differs from the index CRS, that CRS and
-        its native resolution are returned so the data can be read without
-        warping. Otherwise the index CRS is returned with no resolution.
+        If :attr:`_prefer_native_crs` is set, the data is read in the native CRS
+        held by the most files a query matched (the majority); any files in other
+        CRSs are warped onto it. This anchors a boundary-straddling query on a
+        native zone rather than the index CRS. Otherwise the index CRS is returned.
 
         Args:
             df: The rows of :attr:`index` matched by a query.
 
         Returns:
-            A tuple of the CRS to read into and, when reading natively, the
-            native resolution in that CRS (else ``None``).
+            A tuple of the CRS to read into and, when reading natively, the native
+            resolution in that CRS (else ``None``).
         """
-        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
-            native = df['native_crs'].iloc[0]
-            if native != self.crs:
-                return native, df['native_res'].iloc[0]
+        if self._prefer_native_crs:
+            # Majority native CRS wins; ties broken by match order
+            out_crs = df['native_crs'].value_counts().index[0]
+            if out_crs != self.crs:
+                out_res = df.loc[df['native_crs'] == out_crs, 'native_res'].iloc[0]
+                return out_crs, out_res
         return self.crs, None
 
     def _reproject_slice(
