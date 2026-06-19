@@ -178,22 +178,24 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     ) -> tuple[CRS, tuple[float, float] | None]:
         """Choose the CRS and resolution to read a query into.
 
-        If :attr:`_prefer_native_crs` is set and every file matched by a query
-        shares a single native CRS that differs from the index CRS, that CRS and
-        its native resolution are returned so the data can be read without
-        warping. Otherwise the index CRS is returned with no resolution.
+        If :attr:`_prefer_native_crs` is set, the data is read in the native CRS
+        held by the most files a query matched (the majority); any files in other
+        CRSs are warped onto it. This anchors a boundary-straddling query on a
+        native zone rather than the index CRS. Otherwise the index CRS is returned.
 
         Args:
             df: The rows of :attr:`index` matched by a query.
 
         Returns:
-            A tuple of the CRS to read into and, when reading natively, the
-            native resolution in that CRS (else ``None``).
+            A tuple of the CRS to read into and, when reading natively, the native
+            resolution in that CRS (else ``None``).
         """
-        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
-            native = df['native_crs'].iloc[0]
-            if native != self.crs:
-                return native, df['native_res'].iloc[0]
+        if self._prefer_native_crs:
+            # Majority native CRS wins; ties broken by match order
+            out_crs = df['native_crs'].value_counts().index[0]
+            if out_crs != self.crs:
+                out_res = df.loc[df['native_crs'] == out_crs, 'native_res'].iloc[0]
+                return out_crs, out_res
         return self.crs, None
 
     def _reproject_slice(
@@ -585,9 +587,11 @@ class RasterDataset(GeoDataset):
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
                 native CRS are read in that CRS, at its native resolution,
-                without warping, instead of the index CRS. Ignored if *crs* is
-                specified. Samples may then be returned in different CRSs, which
-                is unsuitable for stitching gridded predictions back together.
+                without warping. The index then uses a global equal-area CRS
+                (EPSG:6933) for bookkeeping rather than the first file's CRS, so
+                the dataset stays valid across UTM zones. Ignored if *crs* is
+                specified. Samples may be returned in different CRSs, which is
+                unsuitable for stitching gridded predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -608,6 +612,12 @@ class RasterDataset(GeoDataset):
         self.cache = cache
         self.time_series = time_series
         self._prefer_native_crs = prefer_native_crs and crs is None
+
+        # When reading natively, the index CRS is pure bookkeeping, so use a global
+        # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This
+        # keeps the index valid across UTM zones and area-weighted sampling uniform.
+        if self._prefer_native_crs:
+            crs = CRS.from_epsg(6933)
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
