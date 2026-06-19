@@ -110,6 +110,22 @@ class CustomSentinelDataset(Sentinel2):
     separate_files = False
 
 
+class RemapMaskNAIP(NAIP):
+    """A mask dataset that remaps its values in a ``__getitem__`` override.
+
+    Mirrors real mask datasets (e.g. CDL, NLCD, L7IrishMask) that post-process the
+    sample returned by ``super().__getitem__``. Used to prove the remap still runs
+    when this dataset is a *non-anchor* combiner child warped onto a foreign grid.
+    """
+
+    is_image = False
+
+    def __getitem__(self, index: GeoSlice) -> Sample:
+        sample = super().__getitem__(index)
+        sample['mask'] = torch.full_like(sample['mask'], 7)
+        return sample
+
+
 class CustomNonGeoDataset(NonGeoDataset):
     def __getitem__(self, index: int) -> Sample:
         return {'index': torch.tensor(index)}
@@ -602,6 +618,35 @@ class TestRasterDataset:
             sample = combined[query(combined)]
             assert sample['crs'] == CRS.from_epsg(4326)
             assert sample['image'].shape[-2:] == (size, size)
+
+    def test_combine_nonanchor_override_runs_when_warped(self) -> None:
+        # A mask dataset that remaps values in a __getitem__ override must still run
+        # that override when it is the *non-anchor* child warped onto the anchor's
+        # foreign native grid. The grid spec rides through the public __getitem__, so
+        # the override (which calls super().__getitem__) sees it for free.
+        size = 8
+        anchor = NAIP(self.naip_dir, prefer_native_crs=True)
+        mask = RemapMaskNAIP(self.naip_dir)
+        n = len(anchor.index)
+        anchor.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        anchor.index['native_res'] = [(2.0, 3.0)] * n  # ty: ignore[invalid-assignment]
+
+        # Mask is the right operand, so anchor (index 0) sets the shared grid and the
+        # mask child is warped onto the anchor's foreign native CRS.
+        combined = anchor & mask
+        x, y, t = combined.bounds
+        cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
+        query = (
+            slice(cx, cx + size * x.step, x.step),
+            slice(cy, cy + size * y.step, y.step),
+            t,
+        )
+        sample = combined[query]
+
+        # Warped onto the anchor's foreign native CRS ...
+        assert sample['crs'] == CRS.from_epsg(4326)
+        # ... and the non-anchor mask's remap still ran on that warped read.
+        assert (sample['mask'] == 7).all()
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)
