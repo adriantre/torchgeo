@@ -134,9 +134,9 @@ class TestGeoDataset:
         # Reading into its own CRS works
         own = dataset._grid_key(index, dataset.crs, (1.0, 1.0))
         assert isinstance(dataset[own], dict)
-        # A trailing (out_crs, out_res) grid spec in the key is peeled by __getitem__
-        # and forwarded to _getitem; a dataset that can't read into an arbitrary CRS
-        # refuses loudly rather than silently misaligning when combined onto another CRS.
+        # A trailing (out_crs, out_res) grid spec in the key is peeled by __getitem__;
+        # a dataset that can't read into an arbitrary CRS refuses loudly rather than
+        # silently misaligning when combined onto another CRS.
         with pytest.raises(NotImplementedError, match='non-native CRS'):
             dataset[dataset._grid_key(index, CRS.from_epsg(4326), (1.0, 1.0))]
 
