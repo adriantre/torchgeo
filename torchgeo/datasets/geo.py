@@ -201,8 +201,10 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
 
         The query center is reprojected (a point, so without the inflation a
-        reprojected box would incur) and an exact pixel-aligned box is rebuilt
-        around it at *out_res*, preserving the pixel dimensions of the query.
+        reprojected box would incur) and a box is rebuilt around it at *out_res*,
+        preserving the pixel dimensions of the query. The box origin is snapped to the
+        *out_res* grid so that reads of data tiled on that grid are pixel-aligned and
+        are not resampled in the merge (the point of reading in the native CRS).
 
         Args:
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
@@ -218,9 +220,15 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         transformer = _cached_transformer(self.crs, out_crs)
         cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
         xres, yres = out_res
-        left, right = cx - width * xres / 2, cx + width * xres / 2
-        bottom, top = cy - height * yres / 2, cy + height * yres / 2
-        return slice(left, right, xres), slice(bottom, top, yres), t
+        # Snap the lower-left corner to the out_res grid, then extend by the pixel
+        # dimensions, so the box edges fall on grid lines shared with the data tiles.
+        left = (cx - width * xres / 2) // xres * xres
+        bottom = (cy - height * yres / 2) // yres * yres
+        return (
+            slice(left, left + width * xres, xres),
+            slice(bottom, bottom + height * yres, yres),
+            t,
+        )
 
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
