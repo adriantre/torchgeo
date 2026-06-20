@@ -9,6 +9,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
+import functools
 import glob
 import hashlib
 import importlib
@@ -28,6 +29,7 @@ from typing import Any, TypeAlias, cast, overload
 import numpy as np
 import pandas as pd
 import pyogrio
+import pyproj
 import rasterio
 import shapely.affinity
 import torch
@@ -51,9 +53,49 @@ from .errors import DependencyNotFoundError
 #:    ds[xmin:xmax, ymin:ymax, tmin:tmax]
 #:
 #: All values are optional and will default to the spatiotemporal extent of the dataset.
+#:
+#: A fully-specified slice may be tagged with a trailing ``(out_crs, out_res)`` grid
+#: spec, letting :class:`IntersectionDataset`/:class:`UnionDataset` drive every child
+#: onto one grid through the public ``__getitem__`` (so subclass overrides are honored).
+#: The bounds stay in the index CRS (each child reprojects them) and the slice steps
+#: keep carrying the query resolution (its pixel count); *out_res* is the separate read
+#: resolution in *out_crs*. Requiring all three slices avoids a combinatorial union over
+#: partial arities.
 GeoSlice: TypeAlias = (  # noqa: UP040
-    slice | tuple[slice] | tuple[slice, slice] | tuple[slice, slice, slice]
+    slice
+    | tuple[slice]
+    | tuple[slice, slice]
+    | tuple[slice, slice, slice]
+    | tuple[slice, slice, slice, pyproj.CRS, tuple[float, float]]
 )
+
+
+def _split_grid(
+    index: GeoSlice,
+) -> tuple[GeoSlice, pyproj.CRS | None, tuple[float, float] | None]:
+    """Peel an optional trailing ``(out_crs, out_res)`` grid spec off a slice.
+
+    A trailing CRS + resolution extends the key with the grid to read into, so dataset
+    combiners can align children through the public ``__getitem__`` rather than a side
+    channel, which means subclass ``__getitem__`` overrides see it for free. The CRS and
+    resolution are separate from the slice steps: the steps still encode the query's
+    pixel count, which is independent of the target read resolution.
+
+    Args:
+        index: A spatiotemporal slice, optionally tagged with a trailing CRS + res.
+
+    Returns:
+        The slice with the grid spec removed, the CRS, and the resolution (the latter
+        two ``None`` if absent).
+    """
+    if (
+        isinstance(index, tuple)
+        and len(index) == 5
+        and isinstance(index[3], pyproj.CRS)
+    ):
+        return index[:3], index[3], index[4]
+    return index, None, None
+
 
 #: Path-like object.
 #:
@@ -70,9 +112,31 @@ Path: TypeAlias = str | os.PathLike[str]  # noqa: UP040
 #: * label: expected output classification or regression label
 #: * bbox_xyxy: expected output bounding box in (x1, y1, x2, y2) format
 #: * prediction: predicted output
+#: * bounds: spatiotemporal bounds of the sample
+#: * transform: affine transform of the sample
+#: * crs: :term:`coordinate reference system (CRS)` the sample is in
 #:
-#: Values are usually of type torch.Tensor.
+#: Values are usually of type torch.Tensor. The ``crs`` key is an exception: it holds
+#: a non-tensor :class:`pyproj.CRS`. Collation keeps it as a per-sample list, and
+#: device transfer and augmentation pass it through unchanged.
 Sample: TypeAlias = dict[str, Any]  # noqa: UP040
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Transformer:
+    """Cache CRS transformers, which are expensive to construct (~0.5 ms each).
+
+    Reads reproject the query into the data's native CRS on every sample, so the
+    handful of distinct ``(src, dst)`` pipelines are reused rather than rebuilt.
+
+    Args:
+        src_crs: Source :term:`coordinate reference system (CRS)`.
+        dst_crs: Destination :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        A transformer from *src_crs* to *dst_crs*.
+    """
+    return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
