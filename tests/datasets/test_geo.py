@@ -325,6 +325,16 @@ class TestGeoDataset:
         ds = CustomGeoDataset(paths=[str(foo), bar])
         assert ds.files == [str(bar), str(foo)]
 
+    def test_download_root_path_single(self) -> None:
+        ds = CustomGeoDataset(paths='foo')
+        assert ds._download_root_path == 'foo'
+
+    def test_download_root_path_multiple_warns(self) -> None:
+        # Multiple paths can't all be a download destination: warn and use the first.
+        ds = CustomGeoDataset(paths=['foo', 'bar'])
+        with pytest.warns(UserWarning, match='only supports a single path'):
+            assert ds._download_root_path == 'foo'
+
     @pytest.mark.parametrize(
         'temp_archive',
         [
