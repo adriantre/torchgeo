@@ -13,7 +13,7 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, check_integrity, extract_archive
+from .utils import Path, Sample, check_integrity, extract_archive, find_files
 
 
 class CMSGlobalMangroveCanopy(RasterDataset):
@@ -233,11 +233,10 @@ class CMSGlobalMangroveCanopy(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted files already exist
-        if self.files:
+        if find_files(self._download_root_path, self.filename_glob):
             return
 
         # Check if the zip file has already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
         paths = cast(Path, self.paths)
         pathname = os.path.join(paths, self.zipfile)
         if os.path.exists(pathname):
@@ -250,9 +249,7 @@ class CMSGlobalMangroveCanopy(RasterDataset):
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
-        pathname = os.path.join(paths, self.zipfile)
+        pathname = os.path.join(self._download_root_path, self.zipfile)
         extract_archive(pathname)
 
     def plot(

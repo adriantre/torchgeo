@@ -14,7 +14,7 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, check_integrity, extract_archive
+from .utils import Path, Sample, check_integrity, extract_archive, find_files
 
 
 class EUDEM(RasterDataset):
@@ -121,11 +121,10 @@ class EUDEM(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted file already exists
-        if self.files:
+        if find_files(self._download_root_path, self.filename_glob):
             return
 
         # Check if the zip files have already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
         paths = cast(Path, self.paths)
         pathname = os.path.join(paths, self.zipfile_glob)
         if glob.glob(pathname):
