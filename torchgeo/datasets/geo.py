@@ -377,6 +377,9 @@ class RasterDataset(GeoDataset):
     #: Color map for the dataset, used for plotting
     cmap: ClassVar[dict[int, tuple[int, int, int, int]]] = {}
 
+    #: Nodata value for the dataset. If None, the source files' nodata value is used.
+    nodata_value: float | None = None
+
     @property
     def dtype(self) -> torch.dtype:
         """The dtype of the dataset (overrides the dtype of the data file via a cast).
@@ -716,6 +719,8 @@ class RasterDataset(GeoDataset):
         )
 
         if needs_warp:
+            # Only override nodata if specified
+            nodata = {} if self.nodata_value is None else {'nodata': self.nodata_value}
             vrt = WarpedVRT(
                 src,
                 crs=dst_crs,
@@ -724,6 +729,7 @@ class RasterDataset(GeoDataset):
                 width=dst_width,
                 src_crs=src_crs,
                 src_transform=src_transform,
+                **nodata,
             )
             src.close()
             return vrt
@@ -804,6 +810,9 @@ class XarrayDataset(GeoDataset):
 
     .. versionadded:: 0.8
     """
+
+    #: Nodata value for the dataset. If None, the source files' nodata value is used.
+    nodata_value: float | None = None
 
     def __init__(
         self,
@@ -952,8 +961,14 @@ class XarrayDataset(GeoDataset):
 
                 datasets.append(src)
 
+            if self.nodata_value is not None:
+                nodata = self.nodata_value
+            else:
+                # Fall back to the first source's nodata value, or 0 if undefined
+                nodata = datasets[0][self.data_vars[0]].rio.nodata or 0
+
             dataset = rioxr.merge.merge_datasets(
-                datasets, bounds=bounds, res=res, nodata=0, crs=self.crs
+                datasets, bounds=bounds, res=res, nodata=nodata, crs=self.crs
             )
             dataset = dataset.sel(time=t)
 

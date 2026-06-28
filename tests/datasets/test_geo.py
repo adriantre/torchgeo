@@ -18,6 +18,7 @@ from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
+from rasterio.vrt import WarpedVRT
 from torch import Tensor
 from torch.utils.data import ConcatDataset
 
@@ -527,6 +528,25 @@ class TestRasterDataset:
         assert ds.res == (10.0, 10.0)
         ds.res = 20.0
 
+    def test_nodata_value_is_passed_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        wvrt_kwargs: list[dict[str, object]] = []
+        original_wvrt = WarpedVRT
+
+        def spy_wvrt(src: object, **kwargs: object) -> WarpedVRT:
+            wvrt_kwargs.append(dict(kwargs))
+            return original_wvrt(src, **kwargs)  # type: ignore[call-arg]
+
+        monkeypatch.setattr('torchgeo.datasets.geo.WarpedVRT', spy_wvrt)
+
+        class Sentinel2WithNodata(Sentinel2):
+            nodata_value: float | None = 0.0
+
+        root = os.path.join('tests', 'data', 'sentinel2')
+        Sentinel2WithNodata(root, crs=CRS.from_epsg(4326), res=(0.0001, 0.0001))
+
+        assert len(wvrt_kwargs) > 0
+        assert all(k.get('nodata') == 0.0 for k in wvrt_kwargs)
+
     @pytest.mark.parametrize('x,y', [(-2, 2), (2, -2), (-2, -2)])
     def test_malformed_res(self, x: int, y: int) -> None:
         root = os.path.join('tests', 'data', 'raster', f'res_{x}-{y}_epsg_4087')
@@ -594,6 +614,29 @@ class TestXarrayDataset:
     def test_no_data(self, tmp_path: Path) -> None:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             XarrayDataset(tmp_path)
+
+    def test_nodata_value_is_passed_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip('h5py', minversion='3.10')
+        import rioxarray.merge
+        from xarray import Dataset
+
+        merge_kwargs: list[dict[str, object]] = []
+        original_merge = rioxarray.merge.merge_datasets
+
+        def spy_merge(datasets: Sequence[Dataset], **kwargs: object) -> Dataset:
+            merge_kwargs.append(dict(kwargs))
+            return original_merge(datasets, **kwargs)  # ty: ignore[invalid-argument-type]
+
+        monkeypatch.setattr('rioxarray.merge.merge_datasets', spy_merge)
+
+        class XarrayWithNodata(XarrayDataset):
+            nodata_value: float | None = 0.0
+
+        ds = XarrayWithNodata(os.path.join('tests', 'data', 'hdf5'))
+        ds[ds.bounds]
+
+        assert len(merge_kwargs) > 0
+        assert all(k.get('nodata') == 0.0 for k in merge_kwargs)
 
 
 class TestVectorDataset:
