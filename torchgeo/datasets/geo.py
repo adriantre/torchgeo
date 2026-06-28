@@ -807,8 +807,7 @@ class RasterDataset(GeoDataset):
 
         Called during indexing for each file in the dataset.
         Override this in subclasses to compute a more precise footprint than
-        just the raster bounds (e.g. by reading a metadata file or by using
-        :func:`~torchgeo.datasets.utils.get_valid_footprint_from_datasource`).
+        just the raster bounds (e.g. by reading a metadata file).
 
         Args:
             dataset: An open raster dataset, either a :class:`rasterio.io.DatasetReader`
@@ -819,7 +818,7 @@ class RasterDataset(GeoDataset):
             :class:`shapely.geometry.MultiPolygon` representing the footprint
             in the dataset's CRS.
 
-        .. versionadded:: 0.9
+        .. versionadded:: 0.10
         """
         return shapely.box(*dataset.bounds)
 

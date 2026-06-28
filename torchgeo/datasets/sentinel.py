@@ -6,13 +6,11 @@
 import os
 import re
 from collections.abc import Callable, Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
+import geopandas as gpd
 import matplotlib.pyplot as plt
-import pyproj
 import rasterio
-import shapely
-import shapely.ops
 import shapely.wkt
 import torch
 from matplotlib.figure import Figure
@@ -20,7 +18,6 @@ from pyproj import CRS
 from rasterio import DatasetReader
 from rasterio.vrt import WarpedVRT
 from shapely import MultiPolygon, Polygon
-from shapely.ops import transform
 
 from .errors import RGBBandsMissingError
 from .geo import RasterDataset
@@ -486,12 +483,7 @@ class Sentinel2(Sentinel):
                 or a :class:`rasterio.vrt.WarpedVRT`, from which the footprint will
                 be derived.
 
-        Returns:
-            A :class:`shapely.geometry.Polygon` or
-            :class:`shapely.geometry.MultiPolygon` representing the footprint in
-            the dataset's CRS.
-
-        .. versionadded:: 0.9
+        .. versionadded:: 0.10
         """
         if hasattr(dataset, 'src_dataset'):
             # When dataset is a WarpedVRT
@@ -503,8 +495,9 @@ class Sentinel2(Sentinel):
             return super()._footprint_from_datasource(dataset)
         with rasterio.open(metadata_path) as metadata_src:
             tags = metadata_src.tags()
-        true_footprint = shapely.wkt.loads(tags['FOOTPRINT'])
-        transformer = pyproj.Transformer.from_crs(
-            pyproj.CRS('EPSG:4326'), dataset.crs, always_xy=True
-        ).transform
-        return cast(MultiPolygon | Polygon, transform(transformer, true_footprint))
+        # The FOOTPRINT tag in MTD_MSIL1C.xml is always stored in EPSG:4326.
+        return (
+            gpd.GeoSeries([shapely.wkt.loads(tags['FOOTPRINT'])], crs='EPSG:4326')
+            .to_crs(dataset.crs)
+            .iloc[0]
+        )
