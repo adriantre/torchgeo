@@ -379,9 +379,6 @@ class RasterDataset(GeoDataset):
     #: Color map for the dataset, used for plotting
     cmap: ClassVar[dict[int, tuple[int, int, int, int]]] = {}
 
-    #: Nodata value for pixels outside the acquisition footprint; overrides raster nodata.
-    nodata_value: float | None = None
-
     @property
     def dtype(self) -> torch.dtype:
         """The dtype of the dataset (overrides the dtype of the data file via a cast).
@@ -721,8 +718,6 @@ class RasterDataset(GeoDataset):
         )
 
         if needs_warp:
-            # Only override nodata if specified
-            nodata = {} if self.nodata_value is None else {'nodata': self.nodata_value}
             vrt = WarpedVRT(
                 src,
                 crs=dst_crs,
@@ -731,7 +726,6 @@ class RasterDataset(GeoDataset):
                 width=dst_width,
                 src_crs=src_crs,
                 src_transform=src_transform,
-                **nodata,
             )
             src.close()
             return vrt
