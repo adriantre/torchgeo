@@ -718,9 +718,13 @@ class RasterDataset(GeoDataset):
             )
         )
 
-        if needs_warp:
-            # Only override nodata if specified
-            nodata = {} if self.nodata_value is None else {'nodata': self.nodata_value}
+        # Wrap in a WarpedVRT to reproject and/or apply the nodata override. The
+        # override requires a VRT even without reprojection, since the nodata value
+        # of a read-mode dataset cannot be changed in place.
+        if needs_warp or self.nodata_value is not None:
+            nodata = (
+                {} if self.nodata_value is None else {'src_nodata': self.nodata_value}
+            )
             vrt = WarpedVRT(
                 src,
                 crs=dst_crs,
@@ -810,9 +814,6 @@ class XarrayDataset(GeoDataset):
 
     .. versionadded:: 0.8
     """
-
-    #: Nodata value for the dataset. If None, the source files' nodata value is used.
-    nodata_value: float | None = None
 
     def __init__(
         self,
@@ -961,11 +962,9 @@ class XarrayDataset(GeoDataset):
 
                 datasets.append(src)
 
-            if self.nodata_value is not None:
-                nodata = self.nodata_value
-            else:
-                # Fall back to the first source's nodata value, or 0 if undefined
-                nodata = datasets[0][self.data_vars[0]].rio.nodata or 0
+            # Fill no-data areas with the source's nodata value (typically NaN for
+            # xarray data), or 0 if the source defines none.
+            nodata = datasets[0][self.data_vars[0]].rio.nodata or 0
 
             dataset = rioxr.merge.merge_datasets(
                 datasets, bounds=bounds, res=res, nodata=nodata, crs=self.crs

@@ -18,7 +18,6 @@ from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
-from rasterio.vrt import WarpedVRT
 from torch import Tensor
 from torch.utils.data import ConcatDataset
 
@@ -528,24 +527,39 @@ class TestRasterDataset:
         assert ds.res == (10.0, 10.0)
         ds.res = 20.0
 
-    def test_nodata_value_is_passed_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        wvrt_kwargs: list[dict[str, object]] = []
-        original_wvrt = WarpedVRT
-
-        def spy_wvrt(src: object, **kwargs: object) -> WarpedVRT:
-            wvrt_kwargs.append(dict(kwargs))
-            return original_wvrt(src, **kwargs)  # type: ignore[call-arg]
-
-        monkeypatch.setattr('torchgeo.datasets.geo.WarpedVRT', spy_wvrt)
+    @pytest.mark.parametrize(
+        'crs,res',
+        [
+            (CRS.from_epsg(4326), (0.0001, 0.0001)),  # reprojected (needs warp)
+            (CRS.from_epsg(32616), (10.0, 10.0)),  # native grid (no warp)
+        ],
+    )
+    def test_nodata_value_masks_zero_fill(
+        self, crs: CRS, res: tuple[float, float]
+    ) -> None:
+        # The generated Sentinel-2 fixtures declare no nodata value but contain
+        # zero-valued fill pixels, like real edge tiles. Overriding nodata_value
+        # makes those pixels register as invalid in the data mask, both when the
+        # data is reprojected and when it is read on its native grid.
+        root = os.path.join('tests', 'data', 'sentinel2')
+        bands = ('B04', 'B03', 'B02')
 
         class Sentinel2WithNodata(Sentinel2):
             nodata_value: float | None = 0.0
 
-        root = os.path.join('tests', 'data', 'sentinel2')
-        Sentinel2WithNodata(root, crs=CRS.from_epsg(4326), res=(0.0001, 0.0001))
+        ds = Sentinel2(root, crs=crs, res=res, bands=bands)
+        ds_nodata = Sentinel2WithNodata(root, crs=crs, res=res, bands=bands)
+        filepath = ds.files[0]
 
-        assert len(wvrt_kwargs) > 0
-        assert all(k.get('nodata') == 0.0 for k in wvrt_kwargs)
+        with ds._load_warp_file(filepath) as vrt:
+            invalid = (vrt.dataset_mask() == 0).sum()
+        with ds_nodata._load_warp_file(filepath) as vrt:
+            invalid_nodata = (vrt.dataset_mask() == 0).sum()
+
+        # Without an override the zero fill counts as valid data; the override
+        # marks it as invalid.
+        assert invalid == 0
+        assert invalid_nodata > 0
 
     @pytest.mark.parametrize('x,y', [(-2, 2), (2, -2), (-2, -2)])
     def test_malformed_res(self, x: int, y: int) -> None:
@@ -615,28 +629,19 @@ class TestXarrayDataset:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             XarrayDataset(tmp_path)
 
-    def test_nodata_value_is_passed_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_nodata_fill_is_nan(self) -> None:
+        # No-data areas (here, a window extending beyond the data) are filled with
+        # the source's nodata value, which the era5 fixtures declare as NaN -- not a
+        # hard-coded 0.
         pytest.importorskip('h5py', minversion='3.10')
-        import rioxarray.merge
-        from xarray import Dataset
+        ds = XarrayDataset(os.path.join('tests', 'data', 'hdf5'))
+        # Extend the query east of the data so part of the window has no source.
+        x, y, t = ds.bounds
+        query = (slice(x.start, x.stop + 30, x.step), y, t)
 
-        merge_kwargs: list[dict[str, object]] = []
-        original_merge = rioxarray.merge.merge_datasets
+        image = ds[query]['image']
 
-        def spy_merge(datasets: Sequence[Dataset], **kwargs: object) -> Dataset:
-            merge_kwargs.append(dict(kwargs))
-            return original_merge(datasets, **kwargs)  # ty: ignore[invalid-argument-type]
-
-        monkeypatch.setattr('rioxarray.merge.merge_datasets', spy_merge)
-
-        class XarrayWithNodata(XarrayDataset):
-            nodata_value: float | None = 0.0
-
-        ds = XarrayWithNodata(os.path.join('tests', 'data', 'hdf5'))
-        ds[ds.bounds]
-
-        assert len(merge_kwargs) > 0
-        assert all(k.get('nodata') == 0.0 for k in merge_kwargs)
+        assert torch.isnan(image).any()
 
 
 class TestVectorDataset:
