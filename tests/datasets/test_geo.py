@@ -537,10 +537,6 @@ class TestRasterDataset:
     def test_nodata_value_masks_zero_fill(
         self, crs: CRS, res: tuple[float, float]
     ) -> None:
-        # The generated Sentinel-2 fixtures declare no nodata value but contain
-        # zero-valued fill pixels, like real edge tiles. Overriding nodata_value
-        # makes those pixels register as invalid in the data mask, both when the
-        # data is reprojected and when it is read on its native grid.
         root = os.path.join('tests', 'data', 'sentinel2')
         bands = ('B04', 'B03', 'B02')
 
@@ -548,18 +544,15 @@ class TestRasterDataset:
             nodata_value: float | None = 0.0
 
         ds = Sentinel2(root, crs=crs, res=res, bands=bands)
+        with ds._load_warp_file(ds.files[0]) as vrt:
+            masked_default = (vrt.dataset_mask() == 0).sum()
+
         ds_nodata = Sentinel2WithNodata(root, crs=crs, res=res, bands=bands)
-        filepath = ds.files[0]
+        with ds_nodata._load_warp_file(ds_nodata.files[0]) as vrt:
+            masked_override = (vrt.dataset_mask() == 0).sum()
 
-        with ds._load_warp_file(filepath) as vrt:
-            invalid = (vrt.dataset_mask() == 0).sum()
-        with ds_nodata._load_warp_file(filepath) as vrt:
-            invalid_nodata = (vrt.dataset_mask() == 0).sum()
-
-        # Without an override the zero fill counts as valid data; the override
-        # marks it as invalid.
-        assert invalid == 0
-        assert invalid_nodata > 0
+        assert masked_default == 0
+        assert masked_override > 0
 
     @pytest.mark.parametrize('x,y', [(-2, 2), (2, -2), (-2, -2)])
     def test_malformed_res(self, x: int, y: int) -> None:
@@ -629,18 +622,11 @@ class TestXarrayDataset:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             XarrayDataset(tmp_path)
 
-    def test_nodata_fill_is_nan(self) -> None:
-        # No-data areas (here, a window extending beyond the data) are filled with
-        # the source's nodata value, which the era5 fixtures declare as NaN -- not a
-        # hard-coded 0.
-        pytest.importorskip('h5py', minversion='3.10')
-        ds = XarrayDataset(os.path.join('tests', 'data', 'hdf5'))
-        # Extend the query east of the data so part of the window has no source.
-        x, y, t = ds.bounds
+    def test_nodata_fill_is_nan(self, dataset: XarrayDataset) -> None:
+        # Extend the query east of the data so part of the window has nodata pixels.
+        x, y, t = dataset.bounds
         query = (slice(x.start, x.stop + 30, x.step), y, t)
-
-        image = ds[query]['image']
-
+        image = dataset[query]['image']
         assert torch.isnan(image).any()
 
 
