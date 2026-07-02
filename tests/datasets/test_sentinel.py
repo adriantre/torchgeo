@@ -191,5 +191,5 @@ class TestSentinel2:
         link.symlink_to(Path(filepath).resolve())
 
         with rasterio.open(link) as src:
-            result = dataset._footprint_from_datasource(src)
+            result = dataset.footprint_from_datasource(src)
             assert result.equals_exact(shapely.box(*src.bounds), tolerance=1e-9)  # type: ignore[arg-type]

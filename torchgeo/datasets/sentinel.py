@@ -11,7 +11,6 @@ from typing import ClassVar
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import rasterio
-import shapely.wkt
 import torch
 from matplotlib.figure import Figure
 from pyproj import CRS
@@ -469,7 +468,7 @@ class Sentinel2(Sentinel):
 
         return fig
 
-    def _footprint_from_datasource(
+    def footprint_from_datasource(
         self, dataset: DatasetReader | WarpedVRT
     ) -> MultiPolygon | Polygon:
         """Extract the true geometric footprint from a Sentinel-2 datasource.
@@ -492,12 +491,12 @@ class Sentinel2(Sentinel):
             filepath = dataset.name
         metadata_path = filepath.split('GRANULE')[0] + 'MTD_MSIL1C.xml'
         if not os.path.exists(metadata_path):
-            return super()._footprint_from_datasource(dataset)
+            return super().footprint_from_datasource(dataset)
         with rasterio.open(metadata_path) as metadata_src:
             tags = metadata_src.tags()
         # The FOOTPRINT tag in MTD_MSIL1C.xml is always stored in EPSG:4326.
         return (
-            gpd.GeoSeries([shapely.wkt.loads(tags['FOOTPRINT'])], crs='EPSG:4326')
+            gpd.GeoSeries.from_wkt([tags['FOOTPRINT']], crs='EPSG:4326')
             .to_crs(dataset.crs)
             .iloc[0]
         )

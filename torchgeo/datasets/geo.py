@@ -480,7 +480,7 @@ class RasterDataset(GeoDataset):
                             pass
                     if crs is None:
                         crs = vrt.crs
-                    geometries.append(self._footprint_from_datasource(vrt))
+                    geometries.append(self.footprint_from_datasource(vrt))
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -793,7 +793,7 @@ class RasterDataset(GeoDataset):
 
         return dst_transform, dst_width, dst_height, needs_warp
 
-    def _footprint_from_datasource(
+    def footprint_from_datasource(
         self, dataset: DatasetReader | WarpedVRT
     ) -> MultiPolygon | Polygon:
         """Compute the spatial footprint of the dataset from a file handle.
