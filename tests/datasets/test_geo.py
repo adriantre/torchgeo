@@ -19,6 +19,7 @@ from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
+from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from torch import Tensor, nn
 from torch.utils.data import ConcatDataset
@@ -614,6 +615,32 @@ class TestRasterDataset:
         # crs and index_crs are mutually exclusive
         with pytest.raises(ValueError, match='at most one'):
             NAIP(self.naip_dir, crs=CRS.from_epsg(4326), index_crs=CRS.from_epsg(6933))
+
+    def test_geographic_source_read_in_utm(self, tmp_path: Path) -> None:
+        # A geographic (degrees) source: native reads assume a metric CRS.
+        profile = {
+            'driver': 'GTiff',
+            'dtype': 'uint8',
+            'count': 1,
+            'width': 32,
+            'height': 32,
+            'crs': CRS.from_epsg(4326),
+            'transform': from_origin(6.0, 48.1, 0.001, 0.001),
+        }
+        with rasterio.open(tmp_path / 'geo_2024.tif', 'w', **profile) as dst:
+            dst.write(np.ones((32, 32), 'uint8'), 1)
+
+        # Read in the best-fit UTM zone (metric), not in degrees
+        ds = CustomRasterDataset(torch.float32, tmp_path, prefer_native_crs=True)
+        native_crs = ds.index['native_crs'].iloc[0]
+        assert not native_crs.is_geographic
+        assert native_crs.to_epsg() == 32632
+        # native_res is metric (meters), not the 0.001-degree source resolution
+        assert ds.index['native_res'].iloc[0][0] > 1.0
+
+        # Without prefer_native_crs the geographic CRS is left untouched
+        off = CustomRasterDataset(torch.float32, tmp_path)
+        assert off.index['native_crs'].iloc[0].is_geographic
 
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
