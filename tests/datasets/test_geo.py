@@ -652,6 +652,22 @@ class TestRasterDataset:
         assert ds.crs == native
         assert ds._select_out_crs(ds.index) == (ds.crs, None)
 
+        # The read CRS/res is resolved once (fast-path); the single native CRS is the
+        # index CRS, so the read needs no reprojection
+        native_res = ds.index['native_res'].iloc[0]
+        assert ds._single_out_crs == (native, None)
+
+        # Pinning a different index CRS keeps the single-CRS fast-path, but the read
+        # now reprojects from the index CRS to the files' native CRS and resolution
+        pinned = NAIP(
+            self.naip_dir, prefer_native_crs=True, index_crs=CRS.from_epsg(6933)
+        )
+        assert pinned._single_out_crs == (native, native_res)
+        assert pinned._select_out_crs(pinned.index) == (native, native_res)
+
+        # Clearing the fast-path exercises the per-query selection path
+        ds._single_out_crs = None
+
         # Files differ from the index CRS: read in their shared native CRS and res
         differ = ds.index.copy()
         differ['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
@@ -670,6 +686,7 @@ class TestRasterDataset:
 
         # Disabled when prefer_native_crs is False
         off = NAIP(self.naip_dir)
+        assert off._single_out_crs is None
         assert off._select_out_crs(off.index) == (off.crs, None)
 
     def test_prefer_native_crs_native_res(self) -> None:
@@ -679,6 +696,7 @@ class TestRasterDataset:
         ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
         ds.index['native_res'] = [(2.0, 3.0)] * n
         ds._crs_registry = None  # invalidate the cache after mutating the index
+        ds._single_out_crs = None  # invalidate the fast-path after mutating the index
 
         x, y, t = ds.bounds
         size = 8
@@ -740,6 +758,7 @@ class TestRasterDataset:
             n = len(ds1.index)
             ds1.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
             ds1.index['native_res'] = [(2.0, 3.0)] * n
+            ds1._single_out_crs = None  # invalidate the fast-path after mutating
 
             sample = combined[query(combined)]
             assert combined.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(
@@ -758,6 +777,7 @@ class TestRasterDataset:
         n = len(anchor.index)
         anchor.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
         anchor.index['native_res'] = [(2.0, 3.0)] * n
+        anchor._single_out_crs = None  # invalidate the fast-path after mutating
 
         # Mask is the right operand, so anchor (index 0) sets the shared grid and the
         # mask child is warped onto the anchor's foreign native CRS.
