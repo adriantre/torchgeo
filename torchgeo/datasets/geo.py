@@ -625,11 +625,13 @@ class RasterDataset(GeoDataset):
             prefer_native_crs: if True, queries whose files all share a single
                 native CRS are read in that CRS, at its native resolution,
                 without warping. The index then uses that shared native CRS; a
-                dataset spanning multiple native CRSs instead falls back to a
-                global equal-area CRS (EPSG:6933) so the index stays valid across
-                UTM zones. Ignored if *crs* is specified. Samples may be returned
-                in different CRSs, which is unsuitable for stitching gridded
-                predictions back together.
+                dataset spanning multiple native CRSs (or a single geographic one)
+                instead falls back to a global equal-area CRS (EPSG:6933) so the
+                index stays valid across UTM zones. Files in a geographic CRS (or
+                georeferenced by GCPs) are read in their best-fit UTM zone so
+                patches stay metric. Ignored if *crs* is specified. Samples may be
+                returned in different CRSs, which is unsuitable for stitching
+                gridded predictions back together.
             index_crs: :term:`coordinate reference system (CRS)` for the index used
                 to look up and sample files. Unlike *crs* it does not warp reads, so it
                 can pin the index (e.g. to a global equal-area CRS) while
@@ -708,6 +710,19 @@ class RasterDataset(GeoDataset):
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
+                    # Native reads assume a metric CRS (res and patch sizes are in
+                    # meters). For a geographic (degrees) or GCP-only source, read in its
+                    # best-fit UTM zone instead - metric and locally undistorted - rather
+                    # than in degrees. Only relevant when reading natively.
+                    if self._prefer_native_crs and native_crs.is_geographic:
+                        native_crs = gpd.GeoSeries(
+                            [footprint], crs=index_crs
+                        ).estimate_utm_crs()
+                        utm_vrt = self._load_warp_file(
+                            filepath=filepath, crs=native_crs
+                        )
+                        native_res = utm_vrt.res
+                        utm_vrt.close()
                     geometries.append(footprint)
                     native_crss.append(native_crs)
                     native_ress.append(native_res)
@@ -770,9 +785,11 @@ class RasterDataset(GeoDataset):
 
         Returns the single native CRS shared by every file, so reads need no
         reprojection and the index matches the data. When the files span more than
-        one native CRS, returns EPSG:6933 (EASE-Grid 2.0), a global equal-area CRS
-        that keeps the index valid across UTM zones. Reads each file's CRS once, so
-        it opens every file (metadata only) before the main indexing loop.
+        one native CRS, or share a single *geographic* one (which is read per query
+        in a metric UTM zone, so cannot serve as the index), returns EPSG:6933
+        (EASE-Grid 2.0), a global equal-area CRS that keeps the index valid across
+        UTM zones. Reads each file's CRS once, so it opens every file (metadata
+        only) before the main indexing loop.
 
         Args:
             filename_regex: Compiled regex identifying dataset files.
@@ -790,7 +807,9 @@ class RasterDataset(GeoDataset):
             except rasterio.errors.RasterioIOError:
                 continue
         distinct = list(dict.fromkeys(native_crss))
-        return distinct[0] if len(distinct) == 1 else PROJ_CRS.from_epsg(6933)
+        if len(distinct) == 1 and not distinct[0].is_geographic:
+            return distinct[0]
+        return PROJ_CRS.from_epsg(6933)
 
     @property
     def crs_registry(self) -> list[PROJ_CRS]:
