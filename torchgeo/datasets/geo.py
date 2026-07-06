@@ -196,6 +196,9 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             resolution in that CRS (else ``None``).
         """
         if self._prefer_native_crs:
+            # Single-CRS dataset: the vote is constant, resolved once at init
+            if self._single_out_crs is not None:
+                return self._single_out_crs
             # Majority native CRS wins; ties broken by match order
             out_crs = df['native_crs'].value_counts().index[0]
             if out_crs != self.crs:
@@ -748,6 +751,15 @@ class RasterDataset(GeoDataset):
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=index_crs)
+
+        # Fast-path: with a single native CRS the per-query majority vote is constant, so
+        # resolve the read CRS/res once here and skip the pandas work (and, when it equals
+        # the index CRS, the reprojection) on every read. See the in_index_crs benchmark.
+        self._single_out_crs: tuple[PROJ_CRS, tuple[float, float] | None] | None = None
+        if self._prefer_native_crs and self.index['native_crs'].nunique() == 1:
+            out_crs = self.index['native_crs'].iloc[0]
+            out_res = None if out_crs == self.crs else self.index['native_res'].iloc[0]
+            self._single_out_crs = (out_crs, out_res)
 
     @property
     def crs_registry(self) -> list[PROJ_CRS]:
