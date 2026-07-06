@@ -566,13 +566,14 @@ class RasterDataset(GeoDataset):
         cache: bool = True,
         time_series: bool = False,
         prefer_native_crs: bool = False,
+        index_crs: CRS | None = None,
     ) -> None:
         """Initialize a new RasterDataset instance.
 
         Args:
             paths: one or more root directories to search or files to load
-            crs: :term:`coordinate reference system (CRS)` to warp to
-                (defaults to the CRS of the first file found)
+            crs: :term:`coordinate reference system (CRS)` to warp every read to
+                (defaults to the CRS of the first file found). Also pins the index CRS.
             res: resolution of the dataset in units of CRS
                 (defaults to the resolution of the first file found)
             bands: bands to return (defaults to all bands)
@@ -592,13 +593,20 @@ class RasterDataset(GeoDataset):
                 the dataset stays valid across UTM zones. Ignored if *crs* is
                 specified. Samples may be returned in different CRSs, which is
                 unsuitable for stitching gridded predictions back together.
+            index_crs: :term:`coordinate reference system (CRS)` for the index used
+                to look up and sample files. Unlike *crs* it does not warp reads, so it
+                can pin the index (e.g. to a global equal-area CRS) while
+                *prefer_native_crs* still reads each query in its files' native CRS.
+                Cannot be combined with *crs*. Defaults to EPSG:6933 when
+                *prefer_native_crs* is set, otherwise the first file's CRS.
 
         Raises:
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
+            ValueError: If both *crs* and *index_crs* are specified.
 
         .. versionadded:: 0.10
-           The *prefer_native_crs* parameter.
+           The *prefer_native_crs* and *index_crs* parameters.
 
         .. versionadded:: 0.9
            The *time_series* parameter.
@@ -611,13 +619,20 @@ class RasterDataset(GeoDataset):
         self.transforms = transforms
         self.cache = cache
         self.time_series = time_series
+        # `crs` warps every read to it (disabling native reads); `index_crs` only pins
+        # the index/lookup CRS and leaves the read CRS to per-query selection, so it does
+        # not disable prefer_native_crs. Both set the index CRS, so passing both is
+        # ambiguous.
         self._prefer_native_crs = prefer_native_crs and crs is None
+        if crs is not None and index_crs is not None:
+            raise ValueError('Specify at most one of `crs` and `index_crs`.')
+        index_crs = index_crs or crs
 
-        # When reading natively, the index CRS is pure bookkeeping, so use a global
-        # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This
-        # keeps the index valid across UTM zones and area-weighted sampling uniform.
-        if self._prefer_native_crs:
-            crs = CRS.from_epsg(6933)
+        # When reading natively, the index CRS is pure bookkeeping, so default to a global
+        # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This keeps
+        # the index valid across UTM zones and area-weighted sampling uniform.
+        if index_crs is None and self._prefer_native_crs:
+            index_crs = CRS.from_epsg(6933)
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
@@ -634,15 +649,15 @@ class RasterDataset(GeoDataset):
             if match is not None:
                 vrt = None
                 try:
-                    vrt = self._load_warp_file(filepath=filepath, crs=crs)
+                    vrt = self._load_warp_file(filepath=filepath, crs=index_crs)
                     # See if file has a color map
                     if len(self.cmap) == 0:
                         try:
                             self.cmap = vrt.colormap(1)  # ty: ignore[invalid-attribute-access]
                         except ValueError:
                             pass
-                    if crs is None:
-                        crs = vrt.crs
+                    if index_crs is None:
+                        index_crs = vrt.crs
                     with rasterio.open(filepath) as src:
                         # Normalize to a pyproj CRS once here so the per-query read
                         # path can compare/transform without reconverting (~54 us each).
@@ -694,7 +709,7 @@ class RasterDataset(GeoDataset):
             'native_res': native_ress,
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
-        self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+        self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=index_crs)
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve a sample, optionally reading into a caller-specified grid.
