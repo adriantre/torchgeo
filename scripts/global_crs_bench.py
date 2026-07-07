@@ -29,15 +29,13 @@ import contextlib
 import math
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from typing import NamedTuple
 
 import geopandas as gpd
 import numpy as np
 import rasterio
-import rasterio.merge
 import rasterio.vrt
-import rasterio.warp
 from pyproj import CRS, Transformer
 from rasterio.transform import from_origin
 from shapely.geometry import Point, Polygon
@@ -91,7 +89,6 @@ class Result(NamedTuple):
     batches: int
     elapsed: float
     warps: float  # warped windowed reads per sample
-    reprojects: float  # explicit rasterio.warp.reproject calls per sample
 
 
 def _utm_for(lon: float, lat: float) -> CRS:
@@ -238,16 +235,15 @@ def generate(
 
 
 @contextlib.contextmanager
-def _count_reprojections() -> Iterator[dict[str, int]]:
-    """Count GDAL reprojection work performed while the block runs.
+def _count_warps() -> Iterator[dict[str, int]]:
+    """Count warped windowed reads performed while the block runs.
 
-    Patches ``WarpedVRT.read`` (each call warps one windowed read of an off-CRS source —
-    counted per read, so it survives torchgeo's VRT caching) and ``rasterio.warp.reproject``
-    (explicit reprojection, e.g. inside ``merge``). Native reads open plain datasets, so
-    they register no warped reads. Main wraps every source in a (possibly identity)
-    ``WarpedVRT``, so it counts a read per matched source regardless of cost.
+    Patches ``WarpedVRT.read``: each call warps one windowed read of an off-CRS source
+    (counted per read, so it survives torchgeo's VRT caching). Native reads open plain
+    datasets, so they register nothing; a source already in the read CRS is not wrapped.
+    torchgeo does all warping this way, never a direct ``rasterio.warp.reproject`` call.
     """
-    counts = {'warps': 0, 'reprojects': 0}
+    counts = {'warps': 0}
     vrt_read = rasterio.vrt.WarpedVRT.read
 
     def counted_read(
@@ -256,27 +252,11 @@ def _count_reprojections() -> Iterator[dict[str, int]]:
         counts['warps'] += 1
         return vrt_read(self, *args, **kwargs)
 
-    def counted_reproject(orig: Callable[..., object]) -> Callable[..., object]:
-        def wrapper(*args: object, **kwargs: object) -> object:
-            counts['reprojects'] += 1
-            return orig(*args, **kwargs)
-
-        return wrapper
-
-    # reproject is imported by-name into several modules (e.g. rasterio.merge), so patch
-    # every binding — patching only rasterio.warp would miss merge's own copy.
-    modules = [m for m in (rasterio.warp, rasterio.merge) if hasattr(m, 'reproject')]
-    originals = {m: m.reproject for m in modules}
-
     rasterio.vrt.WarpedVRT.read = counted_read  # type: ignore[method-assign]
-    for m in modules:
-        m.reproject = counted_reproject(originals[m])  # type: ignore[assignment]
     try:
         yield counts
     finally:
         rasterio.vrt.WarpedVRT.read = vrt_read  # type: ignore[method-assign]
-        for m in modules:
-            m.reproject = originals[m]  # type: ignore[assignment]
 
 
 def benchmark(
@@ -332,12 +312,11 @@ def benchmark(
             samples += batch['image'].shape[0]
         return batches, samples, time.perf_counter() - start
 
-    # One instrumented, untimed pass counts reprojections (and doubles as a warmup); the
+    # One instrumented, untimed pass counts warped reads (and doubles as a warmup); the
     # monkeypatch is off before timing so it adds no overhead there.
-    with _count_reprojections() as counts:
+    with _count_warps() as counts:
         _, count_samples, _ = one_pass()
     warps = counts['warps'] / count_samples if count_samples else 0.0
-    reprojects = counts['reprojects'] / count_samples if count_samples else 0.0
 
     # Warmup passes pay one-time costs (PROJ/GDAL init, OS page cache) so timing is
     # order-invariant; reporting the fastest of several repeats sheds random scheduler/
@@ -349,7 +328,7 @@ def benchmark(
     )
 
     native = ', '.join(f'EPSG:{c}' for c in sorted(native_crss))
-    return Result(name, native, num_samples, num_batches, elapsed, warps, reprojects)
+    return Result(name, native, num_samples, num_batches, elapsed, warps)
 
 
 def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None:
@@ -365,13 +344,12 @@ def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None
         'native CRSs',
         'samples',
         'batches',
-        's',
+        'seconds',
         'samples/s',
         'batches/s',
         'warps/smp',
-        'reproj/smp',
     )
-    aligns = '<<>>>>>>>'
+    aligns = '<<>>>>>>'
     rows = [
         (
             r.scenario,
@@ -382,10 +360,9 @@ def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None
             f'{r.samples / r.elapsed:.1f}',
             f'{r.batches / r.elapsed:.2f}',
             f'{r.warps:.2f}',
-            f'{r.reprojects:.2f}',
         )
         if r.samples
-        else (r.scenario, r.native, '-', '-', '-', '-', '-', '-', '-')
+        else (r.scenario, r.native, '-', '-', '-', '-', '-', '-')
         for r in results
     ]
     widths = [
