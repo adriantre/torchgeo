@@ -53,8 +53,6 @@ BANDS = 3
 # zone boundary so estimate_utm_crs() splits them into different UTM zones.
 SCENARIOS: dict[str, tuple[float, float, str]] = {
     'adjacent': (6.0, 48.0, 'lon'),  # zone boundary 6 deg E: UTM zones 31 / 32
-    'same_zone': (9.0, 48.0, 'lon'),  # control: mid zone 32, one native zone (!= index)
-    'in_index_crs': (6.0, 48.0, 'lon'),  # control: authored in the index CRS
     'equator': (33.0, 0.0, 'lat'),  # equator: N / S hemisphere (326xx / 327xx)
     'high_lat': (
         24.0,
@@ -62,6 +60,8 @@ SCENARIOS: dict[str, tuple[float, float, str]] = {
         'lon',
     ),  # zone boundary 24 deg E at 70 deg N: zones 34 / 35
     'antimeridian': (180.0, 20.0, 'lon'),  # +/-180: zones 60 / 1
+    'same_zone': (9.0, 48.0, 'lon'),  # control: mid zone 32, one native zone (!= index)
+    'in_index_crs': (6.0, 48.0, 'lon'),  # control: authored in the index CRS
 }
 # Tiles for these scenarios are authored directly in the index CRS, so neither the warp
 # baseline nor native reads reproject them: the zero-warp floor for read + merge overhead.
