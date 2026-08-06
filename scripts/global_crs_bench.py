@@ -30,20 +30,24 @@ import math
 import os
 import time
 from collections.abc import Iterator
-from typing import NamedTuple
+from typing import Any, NamedTuple, override
 
 import geopandas as gpd
 import numpy as np
 import rasterio
 import rasterio.vrt
+from lightning.pytorch import Trainer
 from pyproj import CRS, Transformer
 from rasterio.transform import from_origin
 from shapely.geometry import Point, Polygon
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from torchgeo.datamodules.geo import GeoDataModule
 from torchgeo.datasets import RasterDataset, stack_samples
-from torchgeo.samplers import RandomPatchSampler
+from torchgeo.profilers import IOProfiler
+from torchgeo.samplers import GriddedPatchSampler, RandomPatchSampler
+from torchgeo.tasks import IOBench as IOBenchTask
 
 BANDS = 3
 
@@ -93,7 +97,9 @@ class Result(NamedTuple):
 
 def _utm_for(lon: float, lat: float) -> CRS:
     """Return the UTM CRS ``estimate_utm_crs()`` picks for a point."""
-    return gpd.GeoSeries([Point(lon, lat)], crs='EPSG:4326').estimate_utm_crs()
+    crs = gpd.GeoSeries([Point(lon, lat)], crs='EPSG:4326').estimate_utm_crs()
+    assert crs is not None
+    return crs
 
 
 def _scenario_centers(
@@ -164,20 +170,21 @@ def _write_tile(
     # Snap the origin to the res grid, as real tiled products are.
     left = (cx - half) // res * res
     top = (cy + half) // res * res
-    profile = {
-        'driver': 'GTiff',
-        'dtype': 'uint16',
-        'count': BANDS,
-        'width': size,
-        'height': size,
-        'crs': crs,
-        'transform': from_origin(left, top, res, res),
-        'tiled': True,
-        'blockxsize': 256,
-        'blockysize': 256,
-    }
     rng = np.random.default_rng(seed)
-    with rasterio.open(path, 'w', **profile) as dst:
+    with rasterio.open(
+        path,
+        'w',
+        driver='GTiff',
+        dtype='uint16',
+        count=BANDS,
+        width=size,
+        height=size,
+        crs=crs.to_wkt(),
+        transform=from_origin(left, top, res, res),
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+    ) as dst:
         for band in range(1, BANDS + 1):
             dst.write(rng.integers(0, 65535, (size, size), dtype='uint16'), band)
 
@@ -246,17 +253,129 @@ def _count_warps() -> Iterator[dict[str, int]]:
     counts = {'warps': 0}
     vrt_read = rasterio.vrt.WarpedVRT.read
 
-    def counted_read(
-        self: rasterio.vrt.WarpedVRT, *args: object, **kwargs: object
-    ) -> object:
+    def counted_read(self: rasterio.vrt.WarpedVRT, *args: Any, **kwargs: Any) -> Any:
         counts['warps'] += 1
         return vrt_read(self, *args, **kwargs)
 
-    rasterio.vrt.WarpedVRT.read = counted_read  # type: ignore[method-assign]
+    rasterio.vrt.WarpedVRT.read = counted_read  # type: ignore[invalid-assignment]
     try:
         yield counts
     finally:
         rasterio.vrt.WarpedVRT.read = vrt_read  # type: ignore[method-assign]
+
+
+class WarpCountingIOProfiler(IOProfiler):
+    """:class:`~torchgeo.profilers.IOProfiler` that also reports warped reads per split.
+
+    Counts ``WarpedVRT.read`` calls (each warps one windowed read of an off-CRS source),
+    attributing each to the train/val action active when it happens, and appends a
+    per-split warps table so warp-to-CRS reads (many) vs native reads (few/none) are
+    visible alongside throughput. Requires ``num_workers=0``: warps in dataloader worker
+    processes are invisible to the main process where the patch lives.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the profiler; see :class:`~torchgeo.profilers.IOProfiler`."""
+        super().__init__(*args, **kwargs)
+        self.warps: dict[str, int] = {}
+        self._active: list[str] = []
+        self._orig_read: Any = None
+
+    @override
+    def start(self, action_name: str) -> None:
+        """Record *action_name* as active, then start timing it.
+
+        Args:
+            action_name: Name of the action being profiled.
+        """
+        self._active.append(action_name)
+        super().start(action_name)
+
+    @override
+    def stop(self, action_name: str) -> None:
+        """Stop timing *action_name* and drop it from the active set.
+
+        Args:
+            action_name: Name of the action being profiled.
+        """
+        super().stop(action_name)
+        if action_name in self._active:
+            self._active.remove(action_name)
+
+    @override
+    def setup(
+        self, stage: str, local_rank: int | None = None, log_dir: str | None = None
+    ) -> None:
+        """Patch ``WarpedVRT.read`` to count warped reads per split.
+
+        Args:
+            stage: Trainer stage.
+            local_rank: Process rank for distributed runs.
+            log_dir: Directory for profiler output.
+        """
+        super().setup(stage, local_rank, log_dir)
+        orig = self._orig_read = rasterio.vrt.WarpedVRT.read
+        profiler = self
+
+        def counted(vrt: rasterio.vrt.WarpedVRT, *a: Any, **k: Any) -> Any:
+            # Attribute the read to the nearest enclosing train/val action (reads outside
+            # sampling, e.g. index building, have no such action and are ignored).
+            for name in reversed(profiler._active):
+                if 'train_dataloader_next' in name or 'val_next' in name:
+                    profiler.warps[name] = profiler.warps.get(name, 0) + 1
+                    break
+            return orig(vrt, *a, **k)
+
+        rasterio.vrt.WarpedVRT.read = counted  # type: ignore[invalid-assignment]
+
+    @override
+    def teardown(self, stage: str | None) -> None:
+        """Restore the original ``WarpedVRT.read``.
+
+        Args:
+            stage: Trainer stage.
+        """
+        if self._orig_read is not None:
+            rasterio.vrt.WarpedVRT.read = self._orig_read  # type: ignore[invalid-assignment]
+            self._orig_read = None
+        super().teardown(stage)
+
+    @override
+    def summary(self) -> str:
+        """Return the IOProfiler summary with per-split warp columns added.
+
+        Mirrors :meth:`IOProfiler.summary` (rather than appending) so ``Warps`` and
+        ``Warps/sample`` sit on the same row as each split's throughput.
+
+        Returns:
+            One table per split: samples, time, rate, warps, and warps/sample.
+        """
+        res = '\nProfile Summary \n'
+        res += (
+            f'\n| {"Split":<10} | {"Strategy":<10} | {"Samples":<10} | {"Time (s)":<10}'
+            f' | {"Rate (samples/s)":<16} | {"Warps":<10} | {"Warps/sample":<12} |'
+        )
+        res += (
+            f'\n| {":":-<10} | {":":-<10} | {":":->10} | {":":->10}'
+            f' | {":":->16} | {":":->10} | {":":->12} |'
+        )
+        for action_name in self.action_count:
+            train = 'train_dataloader_next' in action_name
+            val = 'val_next' in action_name
+            if train or val:
+                total_time = self.action_total_time[action_name]
+                samples = self.action_count[action_name] * self.batch_size
+                rate = 0.0 if total_time == 0 else samples / total_time
+                warps = self.warps.get(action_name, 0)
+                warp_rate = warps / samples if samples else 0.0
+                split = 'Train' if train else 'Validation'
+                strategy = 'Random' if train else 'Grid'
+                res += (
+                    f'\n| {split:<10} | {strategy:<10} | {samples:>10}'
+                    f' | {total_time:>10.3f} | {rate:>16.3f}'
+                    f' | {warps:>10} | {warp_rate:>12.2f} |'
+                )
+        return res
 
 
 def benchmark(
@@ -327,7 +446,9 @@ def benchmark(
         (one_pass() for _ in range(max(1, repeats))), key=lambda r: r[2]
     )
 
-    native = ', '.join(f'EPSG:{c}' for c in sorted(native_crss))
+    native = ', '.join(
+        f'EPSG:{c}' for c in sorted(native_crss, key=lambda c: -1 if c is None else c)
+    )
     return Result(name, native, num_samples, num_batches, elapsed, warps)
 
 
@@ -393,6 +514,97 @@ def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None
         )
 
 
+class MultiUTMDataModule(GeoDataModule):
+    """LightningDataModule over one synthetic multi-UTM scenario, warped to a shared CRS.
+
+    Feeds the same tiles :func:`benchmark` reads through Lightning so throughput can be
+    measured with the merged :class:`~torchgeo.profilers.IOProfiler` (train = random
+    sampling, val = grid sampling), keeping this benchmark aligned with IOBench's.
+    """
+
+    def __init__(
+        self,
+        scenario_dir: str,
+        crs: CRS,
+        batch_size: int = 32,
+        patch_size: int = 256,
+        length: int = 256,
+        num_workers: int = 0,
+    ) -> None:
+        """Initialize a new MultiUTMDataModule instance.
+
+        Args:
+            scenario_dir: Directory holding the scenario's tiles.
+            crs: :term:`coordinate reference system (CRS)` to warp every tile to.
+            batch_size: Number of patches per mini-batch.
+            patch_size: Size of each square patch in pixels.
+            length: Number of random patches per training epoch.
+            num_workers: Dataloader worker processes (0 to count warps).
+        """
+        super().__init__(
+            _GlobalCRSBench,
+            batch_size=batch_size,
+            patch_size=patch_size,
+            length=length,
+            num_workers=num_workers,
+        )
+        self.scenario_dir = scenario_dir
+        self.warp_crs = crs
+
+    @override
+    def setup(self, stage: str) -> None:
+        """Build the dataset and samplers for a stage.
+
+        Args:
+            stage: One of 'fit', 'validate', 'test', or 'predict'.
+        """
+        self.dataset = _GlobalCRSBench(self.scenario_dir, crs=self.warp_crs)
+        if stage == 'fit':
+            self.train_sampler = RandomPatchSampler(
+                self.dataset, size=self.patch_size, length=self.length
+            )
+        if stage in ('fit', 'validate'):
+            self.val_sampler = GriddedPatchSampler(
+                self.dataset, size=self.patch_size, stride=self.patch_size
+            )
+
+
+def profile_scenario(
+    name: str,
+    scenario_dir: str,
+    crs: CRS,
+    patch_size: int,
+    batch_size: int,
+    length: int,
+) -> None:
+    """Time one scenario through Lightning with :class:`WarpCountingIOProfiler`.
+
+    Args:
+        name: Scenario name (row label).
+        scenario_dir: Directory holding the scenario's tiles.
+        crs: :term:`coordinate reference system (CRS)` to warp every tile to.
+        patch_size: Size of each square patch in pixels.
+        batch_size: Number of patches per mini-batch.
+        length: Number of random patches per training epoch.
+    """
+    datamodule = MultiUTMDataModule(
+        scenario_dir, crs, batch_size=batch_size, patch_size=patch_size, length=length
+    )
+    profiler = WarpCountingIOProfiler(batch_size=batch_size)
+    trainer = Trainer(
+        accelerator='cpu',
+        max_epochs=1,
+        num_sanity_val_steps=0,
+        profiler=profiler,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+    )
+    trainer.fit(IOBenchTask(), datamodule=datamodule)
+    print(f'\n=== scenario={name} (warped to EPSG:{crs.to_epsg()}) ===')
+    print(profiler.summary())
+
+
 def main() -> None:
     """Parse CLI args, generate the dataset if needed, and benchmark each scenario."""
     parser = argparse.ArgumentParser(
@@ -445,6 +657,12 @@ def main() -> None:
         default=DEFAULT_SCENARIOS,
         help='which scenarios to benchmark',
     )
+    parser.add_argument(
+        '--profiler',
+        action='store_true',
+        help='measure via Lightning IOProfiler (train=random, val=grid) with a '
+        'warps/sample count, instead of the raw sampling matrix',
+    )
     args = parser.parse_args()
     if not 0.0 <= args.overlap < 1.0:
         parser.error('--overlap must be in [0, 1)')
@@ -459,6 +677,18 @@ def main() -> None:
     generate(args.out, args.size, args.res, args.scenarios, args.crs, args.overlap)
 
     crs = CRS.from_epsg(args.crs)
+    if args.profiler:
+        for name in args.scenarios:
+            profile_scenario(
+                name,
+                _scenario_dir(args.out, name, args.size, args.overlap),
+                crs,
+                patch_size=args.patch_size,
+                batch_size=args.batch_size,
+                length=args.length,
+            )
+        return
+
     results = [
         benchmark(
             name,
