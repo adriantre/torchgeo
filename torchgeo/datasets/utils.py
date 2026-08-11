@@ -1061,6 +1061,29 @@ def find_files(path: Path, filename_glob: str = '*') -> list[str]:
     return sorted(files)
 
 
+def single_path(paths: Path | Iterable[Path]) -> Path:
+    """Return *paths* as a single path.
+
+    Many datasets accept one or more search paths but only support a single root
+    directory for download and archive extraction. This narrows such a value to a
+    single :data:`Path`, centralizing the runtime check and cast in one place.
+
+    Args:
+        paths: One or more paths.
+
+    Returns:
+        The single path.
+
+    Raises:
+        TypeError: If *paths* is not a single path.
+
+    .. versionadded:: 0.10
+    """
+    if not isinstance(paths, str | os.PathLike):
+        raise TypeError(f'Expected a single path, but got {paths!r}.')
+    return cast(Path, paths)
+
+
 def _clean_binary_mask(
     mask: np.typing.NDArray[np.number], threshold: int = 1
 ) -> np.typing.NDArray[np.uint8]:

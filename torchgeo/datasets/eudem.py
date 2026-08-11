@@ -6,7 +6,7 @@
 import glob
 import os
 from collections.abc import Callable, Iterable
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -14,7 +14,7 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, check_integrity, extract_archive
+from .utils import Path, Sample, check_integrity, extract_archive, single_path
 
 
 class EUDEM(RasterDataset):
@@ -125,8 +125,7 @@ class EUDEM(RasterDataset):
             return
 
         # Check if the zip files have already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         pathname = os.path.join(paths, self.zipfile_glob)
         if glob.glob(pathname):
             for zipfile in glob.iglob(pathname):

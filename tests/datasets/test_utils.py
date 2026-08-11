@@ -43,6 +43,7 @@ from torchgeo.datasets.utils import (
     pad_across_batches,
     percentile_normalization,
     quantile_normalization,
+    single_path,
     stack_samples,
     unbind_samples,
     which,
@@ -693,6 +694,12 @@ class TestFindFiles:
         """A path that does not exist inside an archive resolves to nothing."""
         _, archive = temp_archive
         assert find_files(f'/vsizip/{archive}/non_existing.tif') == []
+
+
+def test_single_path() -> None:
+    assert single_path('foo') == 'foo'
+    with pytest.raises(TypeError, match='Expected a single path'):
+        single_path(['foo', 'bar'])
 
 
 @pytest.mark.parametrize(

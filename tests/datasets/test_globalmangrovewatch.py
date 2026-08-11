@@ -77,7 +77,7 @@ class TestGlobalMangroveWatch:
             GlobalMangroveWatch(tmp_path, years=[2020])
 
     def test_multiple_paths_not_downloaded(self, tmp_path: Path) -> None:
-        with pytest.raises(AssertionError, match='paths must be a single root'):
+        with pytest.raises(TypeError, match='Expected a single path'):
             GlobalMangroveWatch([tmp_path], years=[2020], download=True)
 
     def test_invalid_year(self, tmp_path: Path) -> None:
