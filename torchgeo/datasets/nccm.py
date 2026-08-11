@@ -152,7 +152,7 @@ class NCCM(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the files already exist
-        if self.files:
+        if self._list_files():
             return
 
         # Check if the user requested to download the dataset

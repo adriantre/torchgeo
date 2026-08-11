@@ -271,7 +271,7 @@ class Chesapeake(RasterDataset, ABC):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted file already exists
-        if self.files:
+        if self._list_files():
             return
 
         # Check if the zip file has already been downloaded
