@@ -489,7 +489,7 @@ class NLCD(RasterDataset):
 
     def _verify(self) -> None:
         # Check if the extracted files already exist
-        if self.files:
+        if self._list_files():
             return
 
         # Check if the zip files have already been downloaded

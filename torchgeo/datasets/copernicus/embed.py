@@ -90,7 +90,7 @@ class CopernicusEmbed(RasterDataset):
 
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
-        if self.files:
+        if self._list_files():
             return
 
         if self.download:
