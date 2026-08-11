@@ -6,7 +6,6 @@
 import os
 import re
 from collections.abc import Callable, Iterable, Sequence
-from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +19,7 @@ from torch import Tensor
 
 from .errors import DatasetNotFoundError, RGBBandsMissingError
 from .geo import RasterDataset
-from .utils import GeoSlice, Path, Sample, quantile_normalization, which
+from .utils import GeoSlice, Path, Sample, quantile_normalization, single_path, which
 
 
 class SouthAfricaCropType(RasterDataset):
@@ -221,8 +220,7 @@ class SouthAfricaCropType(RasterDataset):
                     imagery_dates[field_id][band_type] = date
 
         # Create Tensors for each band using stored dates
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         for band in self.bands:
             band_type = 's1' if band in self.s1_bands else 's2'
             band_filepaths = []
@@ -279,8 +277,7 @@ class SouthAfricaCropType(RasterDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         os.makedirs(paths, exist_ok=True)
         azcopy = which('azcopy')
         azcopy('sync', f'{self.url}', paths, '--recursive=true')
