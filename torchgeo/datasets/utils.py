@@ -1066,8 +1066,7 @@ def single_path(paths: Path | Iterable[Path]) -> Path:
 
     Many datasets accept one or more search paths but only support a single root
     directory for download and archive extraction. This narrows such a value to a
-    single :data:`Path`, centralizing the assertion and cast required by the type
-    checker.
+    single :data:`Path`, centralizing the runtime check and cast in one place.
 
     Args:
         paths: One or more paths.
@@ -1076,11 +1075,12 @@ def single_path(paths: Path | Iterable[Path]) -> Path:
         The single path.
 
     Raises:
-        AssertionError: If *paths* is not a single path.
+        TypeError: If *paths* is not a single path.
 
     .. versionadded:: 0.10
     """
-    assert isinstance(paths, str | os.PathLike)
+    if not isinstance(paths, str | os.PathLike):
+        raise TypeError(f'Expected a single path, but got {paths!r}.')
     return cast(Path, paths)
 
 

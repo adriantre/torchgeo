@@ -698,7 +698,7 @@ class TestFindFiles:
 
 def test_single_path() -> None:
     assert single_path('foo') == 'foo'
-    with pytest.raises(AssertionError):
+    with pytest.raises(TypeError, match='Expected a single path'):
         single_path(['foo', 'bar'])
 
 
