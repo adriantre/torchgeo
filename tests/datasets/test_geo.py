@@ -515,6 +515,15 @@ class TestRasterDataset:
 
         assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
 
+    def test_crs_registry_without_native_crs_column(self) -> None:
+        # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
+        # registry then holds only the index CRS and every sample resolves to it.
+        ds = NAIP(self.naip_dir)
+        ds.index = ds.index.drop(columns=['native_crs', 'native_res'])
+        assert ds.crs_registry == [ds.crs]
+        x = ds[ds.bounds]
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
+
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
         naip2 = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))

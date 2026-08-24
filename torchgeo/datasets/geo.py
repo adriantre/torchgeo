@@ -636,13 +636,16 @@ class RasterDataset(GeoDataset):
 
         Derived from the ``native_crs`` index column (the same source
         :meth:`_select_out_crs` reads), so a sample's ``crs_index`` always resolves here
-        and stays consistent with the CRS actually chosen for the read.
+        and stays consistent with the CRS actually chosen for the read. Subclasses with a
+        custom index that omits ``native_crs`` read only in :attr:`crs`.
 
         Returns:
             The CRSs this dataset can emit, in first-appearance order.
 
         .. versionadded:: 0.11
         """
+        if 'native_crs' not in self.index:
+            return [self.crs]
         return list(dict.fromkeys([self.crs, *self.index['native_crs']]))
 
     def __getitem__(self, index: GeoSlice) -> Sample:
