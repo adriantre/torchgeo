@@ -650,7 +650,7 @@ class RasterDataset(GeoDataset):
         # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This
         # keeps the index valid across UTM zones and area-weighted sampling uniform.
         if self._prefer_native_crs:
-            crs = CRS.from_epsg(6933)
+            crs = PROJ_CRS.from_epsg(6933)
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
