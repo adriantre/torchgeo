@@ -493,6 +493,28 @@ class TestRasterDataset:
             == ds1.crs_registry[int(x['crs_index'])]
         )
 
+    def test_crs_registry_multi_crs(self) -> None:
+        """The registry aggregates the distinct native CRSs, deduped and ordered.
+
+        A dataset spanning multiple CRS zones exposes each as a stable index (index
+        CRS first, then natives in first-appearance order), derived from the same
+        ``native_crs`` column ``_select_out_crs`` reads, and identical after the
+        process boundary so a native read resolves consistently across ranks/workers.
+        """
+        ds = NAIP(self.naip_dir)
+        index_crs = ds.crs
+        a, b = CRS.from_epsg(4326), CRS.from_epsg(32631)
+        # Simulate files spanning two foreign zones, with a repeat to exercise dedup
+        n = len(ds.index)
+        ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+
+        reg = ds.crs_registry
+        assert reg[0] == index_crs  # index CRS is always index 0
+        assert set(reg) == {index_crs, a, b}
+        assert len(reg) == 3  # deduped, no repeats
+
+        assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
         naip2 = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
@@ -554,7 +576,7 @@ class TestRasterDataset:
         )
         sample = ds[query]
         # Read in the native CRS at the native resolution (exact, no envelope)
-        assert sample['crs'] == CRS.from_epsg(4326)
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(4326)
         assert sample['bounds'][2].item() == 2.0
         assert sample['bounds'][5].item() == 3.0
         assert sample['image'].shape[-2:] == (size, size)
