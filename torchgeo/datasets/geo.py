@@ -178,7 +178,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
     def _select_out_crs(
         self, df: GeoDataFrame
-    ) -> tuple[CRS, tuple[float, float] | None]:
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None]:
         """Choose the CRS and resolution to read a query into.
 
         If :attr:`_prefer_native_crs` is set and every file matched by a query
@@ -200,7 +200,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         return self.crs, None
 
     def _reproject_slice(
-        self, index: GeoSlice, out_crs: CRS, out_res: tuple[float, float]
+        self, index: GeoSlice, out_crs: PROJ_CRS, out_res: tuple[float, float]
     ) -> tuple[slice, slice, slice]:
         """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
 
@@ -346,7 +346,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         A sample's ``crs_index`` key is an integer index into this list, letting the
         per-sample :term:`coordinate reference system (CRS)` travel as a tensor (see
         :data:`~torchgeo.datasets.utils.Sample`). A plain dataset reads every query in
-        :attr:`crs`, so the registry holds that single CRS.
+        :attr:`crs`, so the registry holds that single CRS; subclasses that read in
+        multiple CRSs (e.g. :class:`RasterDataset` native-CRS reads) override this.
 
         Returns:
             The CRSs this dataset can emit, in index order.
@@ -576,7 +577,7 @@ class RasterDataset(GeoDataset):
                     with rasterio.open(filepath) as src:
                         # Normalize to a pyproj CRS once here so the per-query read
                         # path can compare/transform without reconverting (~54 us each).
-                        native_crs = CRS.from_user_input(src.crs or src.gcps[1])
+                        native_crs = PROJ_CRS.from_user_input(src.crs or src.gcps[1])
                         native_res = src.res
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
@@ -628,6 +629,21 @@ class RasterDataset(GeoDataset):
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+
+    @property
+    def crs_registry(self) -> list[PROJ_CRS]:
+        """Distinct CRSs a query may be read in: index CRS first, then per-file natives.
+
+        Derived from the ``native_crs`` index column (the same source
+        :meth:`_select_out_crs` reads), so a sample's ``crs_index`` always resolves here
+        and stays consistent with the CRS actually chosen for the read.
+
+        Returns:
+            The CRSs this dataset can emit, in first-appearance order.
+
+        .. versionadded:: 0.11
+        """
+        return list(dict.fromkeys([self.crs, *self.index['native_crs']]))
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
