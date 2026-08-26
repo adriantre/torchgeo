@@ -378,10 +378,24 @@ class WarpCountingIOProfiler(IOProfiler):
         return res
 
 
+def _make_dataset(scenario_dir: str, crs: CRS, prefer_native: bool) -> _GlobalCRSBench:
+    """Build the scenario dataset in native-read or warp mode.
+
+    Native (``prefer_native=True``): index in *crs* (e.g. EPSG:6933) but read each tile
+    in its own UTM zone -- no warp, only off-zone files in a multi-CRS query are warped.
+    Warp: warp every tile onto the single *crs* grid at read time (the pre-feature
+    baseline; an explicit ``crs`` disables ``prefer_native_crs``).
+    """
+    if prefer_native:
+        return _GlobalCRSBench(scenario_dir, index_crs=crs, prefer_native_crs=True)
+    return _GlobalCRSBench(scenario_dir, crs=crs)
+
+
 def benchmark(
     name: str,
     scenario_dir: str,
     crs: CRS,
+    prefer_native: bool,
     patch_size: int,
     batch_size: int,
     num_workers: int,
@@ -410,7 +424,7 @@ def benchmark(
         keep patches in bounds, which can empty a small tile at high latitude in an
         equal-area CRS) — raise ``--size`` in that case.
     """
-    dataset = _GlobalCRSBench(scenario_dir, crs=crs)
+    dataset = _make_dataset(scenario_dir, crs, prefer_native)
     native_crss = {rasterio.open(f).crs.to_epsg() for f in dataset.files}
     sampler = RandomPatchSampler(
         dataset, size=patch_size, length=length, generator=seed
@@ -452,7 +466,9 @@ def benchmark(
     return Result(name, native, num_samples, num_batches, elapsed, warps)
 
 
-def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None:
+def print_matrix(
+    results: list[Result], index_crs: int, patch_size: int, prefer_native: bool
+) -> None:
     """Print all scenario results as one aligned matrix.
 
     Args:
@@ -503,7 +519,12 @@ def print_matrix(results: list[Result], index_crs: int, patch_size: int) -> None
         return '| ' + ' | '.join(dashes) + ' |'
 
     # GitHub-flavored markdown so the table pastes straight into a PR.
-    print(f'\nWarped to EPSG:{index_crs} (samples/s, higher is better):\n')
+    mode = (
+        f'Native reads (index EPSG:{index_crs})'
+        if prefer_native
+        else f'Warped to EPSG:{index_crs}'
+    )
+    print(f'\n{mode} (samples/s, higher is better):\n')
     print(row(headers))
     print(sep())
     for cells in rows:
@@ -530,6 +551,7 @@ class MultiUTMDataModule(GeoDataModule):
         patch_size: int = 256,
         length: int = 256,
         num_workers: int = 0,
+        prefer_native: bool = False,
     ) -> None:
         """Initialize a new MultiUTMDataModule instance.
 
@@ -540,6 +562,7 @@ class MultiUTMDataModule(GeoDataModule):
             patch_size: Size of each square patch in pixels.
             length: Number of random patches per training epoch.
             num_workers: Dataloader worker processes (0 to count warps).
+            prefer_native: Read each tile in its native UTM zone instead of warping.
         """
         super().__init__(
             _GlobalCRSBench,
@@ -550,6 +573,7 @@ class MultiUTMDataModule(GeoDataModule):
         )
         self.scenario_dir = scenario_dir
         self.warp_crs = crs
+        self.prefer_native = prefer_native
 
     @override
     def setup(self, stage: str) -> None:
@@ -558,7 +582,9 @@ class MultiUTMDataModule(GeoDataModule):
         Args:
             stage: One of 'fit', 'validate', 'test', or 'predict'.
         """
-        self.dataset = _GlobalCRSBench(self.scenario_dir, crs=self.warp_crs)
+        self.dataset = _make_dataset(
+            self.scenario_dir, self.warp_crs, self.prefer_native
+        )
         if stage == 'fit':
             self.train_sampler = RandomPatchSampler(
                 self.dataset, size=self.patch_size, length=self.length
@@ -573,6 +599,7 @@ def profile_scenario(
     name: str,
     scenario_dir: str,
     crs: CRS,
+    prefer_native: bool,
     patch_size: int,
     batch_size: int,
     length: int,
@@ -588,7 +615,12 @@ def profile_scenario(
         length: Number of random patches per training epoch.
     """
     datamodule = MultiUTMDataModule(
-        scenario_dir, crs, batch_size=batch_size, patch_size=patch_size, length=length
+        scenario_dir,
+        crs,
+        batch_size=batch_size,
+        patch_size=patch_size,
+        length=length,
+        prefer_native=prefer_native,
     )
     profiler = WarpCountingIOProfiler(batch_size=batch_size)
     trainer = Trainer(
@@ -601,7 +633,8 @@ def profile_scenario(
         enable_model_summary=False,
     )
     trainer.fit(IOBenchTask(), datamodule=datamodule)
-    print(f'\n=== scenario={name} (warped to EPSG:{crs.to_epsg()}) ===')
+    mode = 'native reads, index' if prefer_native else 'warped to'
+    print(f'\n=== scenario={name} ({mode} EPSG:{crs.to_epsg()}) ===')
     print(profiler.summary())
 
 
@@ -663,6 +696,12 @@ def main() -> None:
         help='measure via Lightning IOProfiler (train=random, val=grid) with a '
         'warps/sample count, instead of the raw sampling matrix',
     )
+    parser.add_argument(
+        '--prefer-native',
+        action='store_true',
+        help='read each tile in its native UTM zone (index in --crs) instead of '
+        'warping every tile to --crs -- the feature under test',
+    )
     args = parser.parse_args()
     if not 0.0 <= args.overlap < 1.0:
         parser.error('--overlap must be in [0, 1)')
@@ -670,6 +709,7 @@ def main() -> None:
     print('Global multi-CRS benchmark')
     print(
         f'out={args.out} size={args.size} crs=EPSG:{args.crs}'
+        f' mode={"native" if args.prefer_native else "warp"}'
         f' patch_size={args.patch_size} batch_size={args.batch_size}'
         f' num_workers={args.num_workers} length={args.length} overlap={args.overlap}'
     )
@@ -683,6 +723,7 @@ def main() -> None:
                 name,
                 _scenario_dir(args.out, name, args.size, args.overlap),
                 crs,
+                args.prefer_native,
                 patch_size=args.patch_size,
                 batch_size=args.batch_size,
                 length=args.length,
@@ -694,6 +735,7 @@ def main() -> None:
             name,
             _scenario_dir(args.out, name, args.size, args.overlap),
             crs=crs,
+            prefer_native=args.prefer_native,
             patch_size=args.patch_size,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
@@ -704,7 +746,7 @@ def main() -> None:
         )
         for name in args.scenarios
     ]
-    print_matrix(results, args.crs, args.patch_size)
+    print_matrix(results, args.crs, args.patch_size, args.prefer_native)
 
 
 if __name__ == '__main__':
