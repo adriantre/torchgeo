@@ -104,6 +104,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     paths: Path | Iterable[Path]
     _res = (0.0, 0.0)
     _prefer_native_crs = False
+    _crs_registry: list[PROJ_CRS] | None = None
 
     #: Glob expression used to search for files.
     #:
@@ -635,18 +636,25 @@ class RasterDataset(GeoDataset):
         """Distinct CRSs a query may be read in: index CRS first, then per-file natives.
 
         Derived from the ``native_crs`` index column (the same source
-        :meth:`_select_out_crs` reads), so a sample's ``crs_index`` always resolves here
-        and stays consistent with the CRS actually chosen for the read. Subclasses with a
-        custom index that omits ``native_crs`` read only in :attr:`crs`.
+        :meth:`_select_out_crs` reads) and cached after first access, so per-read
+        ``crs_index`` stamping stays O(1) instead of rebuilding the registry each call.
+        Subclasses with a custom index that omits ``native_crs`` read only in
+        :attr:`crs`. (Mutating the index after first access requires resetting
+        :attr:`_crs_registry` to ``None`` — the tests do this.)
 
         Returns:
             The CRSs this dataset can emit, in first-appearance order.
 
         .. versionadded:: 0.11
         """
-        if 'native_crs' not in self.index:
-            return [self.crs]
-        return list(dict.fromkeys([self.crs, *self.index['native_crs']]))
+        if self._crs_registry is None:
+            if 'native_crs' not in self.index:
+                self._crs_registry = [self.crs]
+            else:
+                self._crs_registry = list(
+                    dict.fromkeys([self.crs, *self.index['native_crs']])
+                )
+        return self._crs_registry
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
