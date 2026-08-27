@@ -618,7 +618,7 @@ class TestRasterDataset:
 
     def test_geographic_source_read_in_utm(self, tmp_path: Path) -> None:
         # A geographic (degrees) source: native reads assume a metric CRS.
-        profile = {
+        profile: dict[str, Any] = {
             'driver': 'GTiff',
             'dtype': 'uint8',
             'count': 1,
