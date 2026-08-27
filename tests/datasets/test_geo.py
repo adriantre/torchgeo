@@ -507,6 +507,7 @@ class TestRasterDataset:
         # Simulate files spanning two foreign zones, with a repeat to exercise dedup
         n = len(ds.index)
         ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None  # invalidate the cache after mutating the index
 
         reg = ds.crs_registry
         assert reg[0] == index_crs  # index CRS is always index 0
@@ -575,6 +576,7 @@ class TestRasterDataset:
         n = len(ds.index)
         ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
         ds.index['native_res'] = [(2.0, 3.0)] * n
+        ds._crs_registry = None  # invalidate the cache after mutating the index
 
         x, y, t = ds.bounds
         size = 8
