@@ -626,9 +626,11 @@ class RasterDataset(GeoDataset):
                 native CRS are read in that CRS, at its native resolution,
                 without warping. The index then uses a global equal-area CRS
                 (EPSG:6933) for bookkeeping rather than the first file's CRS, so
-                the dataset stays valid across UTM zones. Ignored if *crs* is
-                specified. Samples may be returned in different CRSs, which is
-                unsuitable for stitching gridded predictions back together.
+                the dataset stays valid across UTM zones. Files in a geographic
+                CRS (or georeferenced by GCPs) are instead read in their best-fit
+                UTM zone so patches stay metric. Ignored if *crs* is specified.
+                Samples may be returned in different CRSs, which is unsuitable for
+                stitching gridded predictions back together.
             index_crs: :term:`coordinate reference system (CRS)` for the index used
                 to look up and sample files. Unlike *crs* it does not warp reads, so it
                 can pin the index (e.g. to a global equal-area CRS) while
@@ -704,6 +706,17 @@ class RasterDataset(GeoDataset):
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
+                    # Native reads assume a metric CRS (res and patch sizes are in
+                    # meters). For a geographic (degrees) or GCP-only source, read in its
+                    # best-fit UTM zone instead - metric and locally undistorted - rather
+                    # than in degrees. Only relevant when reading natively.
+                    if self._prefer_native_crs and native_crs.is_geographic:
+                        native_crs = gpd.GeoSeries(
+                            [footprint], crs=index_crs
+                        ).estimate_utm_crs()
+                        utm_vrt = self._load_warp_file(filepath=filepath, crs=native_crs)
+                        native_res = utm_vrt.res
+                        utm_vrt.close()
                     geometries.append(footprint)
                     native_crss.append(native_crs)
                     native_ress.append(native_res)
