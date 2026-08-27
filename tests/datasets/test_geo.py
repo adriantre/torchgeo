@@ -592,6 +592,29 @@ class TestRasterDataset:
         pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
         assert pinned._prefer_native_crs is False
 
+    def test_index_crs(self) -> None:
+        # index_crs pins the index CRS without disabling native reads
+        ds = NAIP(self.naip_dir, prefer_native_crs=True, index_crs=CRS.from_epsg(4326))
+        assert ds._prefer_native_crs is True
+        assert ds.crs == CRS.from_epsg(4326)
+        native = ds.index['native_crs'].iloc[0]
+        assert native != ds.crs
+        assert ds._select_out_crs(ds.index) == (native, ds.index['native_res'].iloc[0])
+
+        # crs, in contrast, pins the index CRS and disables native reads
+        pinned = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+        assert pinned.crs == CRS.from_epsg(4326)
+
+        # index_crs without a native preference just sets the index CRS
+        assert NAIP(self.naip_dir, index_crs=CRS.from_epsg(4326)).crs == CRS.from_epsg(
+            4326
+        )
+
+        # crs and index_crs are mutually exclusive
+        with pytest.raises(ValueError, match='at most one'):
+            NAIP(self.naip_dir, crs=CRS.from_epsg(4326), index_crs=CRS.from_epsg(6933))
+
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
         # Native reads use a global equal-area index CRS (EASE-Grid 2.0)
