@@ -9,14 +9,18 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
+import rasterio
 import shapely
 import torch
 from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
+from rasterio.transform import from_origin
+from rasterio.vrt import WarpedVRT
 from torch import Tensor, nn
 from torch.utils.data import ConcatDataset
 
@@ -33,7 +37,7 @@ from torchgeo.datasets import (
     VectorDataset,
     XarrayDataset,
 )
-from torchgeo.datasets.utils import GeoSlice, Sample
+from torchgeo.datasets.utils import GeoSlice, Sample, _split_grid
 
 MINT = pd.Timestamp(2025, 4, 24)
 MAXT = pd.Timestamp(2025, 4, 25)
@@ -61,6 +65,11 @@ class CustomGeoDataset(GeoDataset):
         self.paths = paths or []
 
     def __getitem__(self, index: GeoSlice) -> Sample:
+        index, out_crs, _ = _split_grid(index)
+        if out_crs is not None and out_crs != self.crs:
+            raise NotImplementedError(
+                f'{type(self).__name__} cannot read into a non-native CRS.'
+            )
         x, y, t = self._disambiguate_slice(index)
         interval = pd.Interval(t.start, t.stop)
         df = self.index.iloc[self.index.index.overlaps(interval)]
@@ -105,6 +114,22 @@ class CustomSentinelDataset(Sentinel2):
     separate_files = False
 
 
+class RemapMaskNAIP(NAIP):
+    """A mask dataset that remaps its values in a ``__getitem__`` override.
+
+    Mirrors real mask datasets (e.g. CDL, NLCD, L7IrishMask) that post-process the
+    sample returned by ``super().__getitem__``. Used to prove the remap still runs
+    when this dataset is a *non-anchor* combiner child warped onto a foreign grid.
+    """
+
+    is_image = False
+
+    def __getitem__(self, index: GeoSlice) -> Sample:
+        sample = super().__getitem__(index)
+        sample['mask'] = torch.full_like(sample['mask'], 7)
+        return sample
+
+
 class CustomNonGeoDataset(NonGeoDataset):
     def __getitem__(self, index: int) -> Sample:
         return {'index': torch.tensor(index)}
@@ -123,6 +148,17 @@ class TestGeoDataset:
         sample = dataset[index]
         assert isinstance(sample, dict)
         assert isinstance(sample['bounds'], Tensor)
+
+    def test_getitem_foreign_crs(self, dataset: GeoDataset) -> None:
+        index = (slice(0, 1, 1), slice(2, 3, 1), slice(MINT, MAXT, 1))
+        # Reading into its own CRS works
+        own = dataset._grid_key(index, dataset.crs, (1.0, 1.0))
+        assert isinstance(dataset[own], dict)
+        # A trailing (out_crs, out_res) grid spec in the key is peeled by __getitem__;
+        # a dataset that can't read into an arbitrary CRS refuses loudly rather than
+        # silently misaligning when combined onto another CRS.
+        with pytest.raises(NotImplementedError, match='non-native CRS'):
+            dataset[dataset._grid_key(index, CRS.from_epsg(4326), (1.0, 1.0))]
 
     def test_len(self, dataset: GeoDataset) -> None:
         assert len(dataset) == 1
@@ -178,6 +214,16 @@ class TestGeoDataset:
         dataset = ds1 | ds2 | ds3 | ds4
         assert isinstance(dataset, UnionDataset)
         assert len(dataset) == 4
+
+    def test_or_nested_disjoint(self) -> None:
+        # A nested union whose inner datasets have no data at the query is skipped
+        ds1 = CustomGeoDataset()
+        ds2 = CustomGeoDataset()
+        ds3 = CustomGeoDataset(bounds=[(10, 11, 12, 13, MINT, MAXT)])
+        dataset = (ds1 | ds2) | ds3
+        index = (slice(10, 11, 1), slice(12, 13, 1), slice(MINT, MAXT, 1))
+        sample = dataset[index]
+        assert isinstance(sample['bounds'], Tensor)
 
     def test_str(self, dataset: GeoDataset) -> None:
         out = str(dataset)
@@ -435,6 +481,7 @@ class TestRasterDataset:
         assert isinstance(x[key], torch.Tensor)
         assert x[key].ndim == expected_ndim
         assert x[key].shape[-3] == len(ds.bands)
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
 
     @pytest.mark.parametrize(
         'bands',
@@ -460,6 +507,66 @@ class TestRasterDataset:
         assert isinstance(x[key], torch.Tensor)
         assert x[key].ndim == expected_ndim
         assert x[key].shape[-3] == len(ds.bands)
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
+
+    def test_crs_registry_deterministic(self) -> None:
+        """``crs_registry`` is a deterministic, per-process function of the files.
+
+        Distributed training builds an independent dataset per rank/worker, so a
+        sample's integer ``crs`` only resolves correctly if every process derives an
+        identical registry with no sharing. Two independent constructions (two ranks)
+        and a pickle round-trip (a spawned worker / broadcast) must all agree.
+        """
+        ds1 = NAIP(self.naip_dir)
+        ds2 = NAIP(self.naip_dir)
+        assert ds1.crs_registry == ds2.crs_registry
+
+        x = ds1[ds1.bounds]
+        assert x['crs_index'].dtype == torch.long
+        assert x['crs_index'].ndim == 0
+        assert ds1.crs_registry[int(x['crs_index'])] == ds1.crs
+
+        # The registry must survive the process boundary exactly as a spawned worker
+        # or a DDP broadcast moves the dataset (via pickle), keeping indices stable.
+        ds3 = pickle.loads(pickle.dumps(ds1))
+        assert ds3.crs_registry == ds1.crs_registry
+        y = ds3[ds3.bounds]
+        assert (
+            ds3.crs_registry[int(y['crs_index'])]
+            == ds1.crs_registry[int(x['crs_index'])]
+        )
+
+    def test_crs_registry_multi_crs(self) -> None:
+        """The registry aggregates the distinct native CRSs, deduped and ordered.
+
+        A dataset spanning multiple CRS zones exposes each as a stable index (index
+        CRS first, then natives in first-appearance order), derived from the same
+        ``native_crs`` column ``_select_out_crs`` reads, and identical after the
+        process boundary so a native read resolves consistently across ranks/workers.
+        """
+        ds = NAIP(self.naip_dir)
+        index_crs = ds.crs
+        a, b = CRS.from_epsg(4326), CRS.from_epsg(32631)
+        # Simulate files spanning two foreign zones, with a repeat to exercise dedup
+        n = len(ds.index)
+        ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        reg = ds.crs_registry
+        assert reg[0] == index_crs  # index CRS is always index 0
+        assert set(reg) == {index_crs, a, b}
+        assert len(reg) == 3  # deduped, no repeats
+
+        assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
+    def test_crs_registry_without_native_crs_column(self) -> None:
+        # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
+        # registry then holds only the index CRS and every sample resolves to it.
+        ds = NAIP(self.naip_dir)
+        ds.index = ds.index.drop(columns=['native_crs', 'native_res'])
+        assert ds.crs_registry == [ds.crs]
+        x = ds[ds.bounds]
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
 
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
@@ -467,6 +574,232 @@ class TestRasterDataset:
         assert naip1.crs != naip2.crs
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
+
+    def test_native_crs_res_columns(self) -> None:
+        native = NAIP(self.naip_dir)
+        # Without reprojection, the native CRS matches the index CRS
+        assert (native.index['native_crs'] == native.crs).all()
+
+        # After reprojection, the index CRS changes but the native columns do not
+        reprojected = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
+        assert reprojected.crs != native.crs
+        assert (reprojected.index['native_crs'] == native.crs).all()
+        assert reprojected.index['native_res'].equals(native.index['native_res'])
+
+    def test_prefer_native_crs_flag(self) -> None:
+        assert NAIP(self.naip_dir)._prefer_native_crs is False
+        assert NAIP(self.naip_dir, prefer_native_crs=True)._prefer_native_crs is True
+        # An explicit CRS pins the output CRS, disabling native preference
+        pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+
+    def test_index_crs(self) -> None:
+        # index_crs pins the index CRS without disabling native reads
+        ds = NAIP(self.naip_dir, prefer_native_crs=True, index_crs=CRS.from_epsg(4326))
+        assert ds._prefer_native_crs is True
+        assert ds.crs == CRS.from_epsg(4326)
+        native = ds.index['native_crs'].iloc[0]
+        assert native != ds.crs
+        assert ds._select_out_crs(ds.index) == (native, ds.index['native_res'].iloc[0])
+
+        # crs, in contrast, pins the index CRS and disables native reads
+        pinned = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+        assert pinned.crs == CRS.from_epsg(4326)
+
+        # index_crs without a native preference just sets the index CRS
+        assert NAIP(self.naip_dir, index_crs=CRS.from_epsg(4326)).crs == CRS.from_epsg(
+            4326
+        )
+
+        # crs and index_crs are mutually exclusive
+        with pytest.raises(ValueError, match='at most one'):
+            NAIP(self.naip_dir, crs=CRS.from_epsg(4326), index_crs=CRS.from_epsg(6933))
+
+    def test_geographic_source_read_in_utm(self, tmp_path: Path) -> None:
+        # A geographic (degrees) source: native reads assume a metric CRS.
+        profile: dict[str, Any] = {
+            'driver': 'GTiff',
+            'dtype': 'uint8',
+            'count': 1,
+            'width': 32,
+            'height': 32,
+            'crs': CRS.from_epsg(4326),
+            'transform': from_origin(6.0, 48.1, 0.001, 0.001),
+        }
+        with rasterio.open(tmp_path / 'geo_2024.tif', 'w', **profile) as dst:
+            dst.write(np.ones((32, 32), 'uint8'), 1)
+
+        # Read in the best-fit UTM zone (metric), not in degrees
+        ds = CustomRasterDataset(torch.float32, tmp_path, prefer_native_crs=True)
+        native_crs = ds.index['native_crs'].iloc[0]
+        assert not native_crs.is_geographic
+        assert native_crs.to_epsg() == 32632
+        # native_res is metric (meters), not the 0.001-degree source resolution
+        assert ds.index['native_res'].iloc[0][0] > 1.0
+
+        # Without prefer_native_crs the geographic CRS is left untouched
+        off = CustomRasterDataset(torch.float32, tmp_path)
+        assert off.index['native_crs'].iloc[0].is_geographic
+
+    def test_select_out_crs(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Native reads use a global equal-area index CRS (EASE-Grid 2.0)
+        assert ds.crs == CRS.from_epsg(6933)
+
+        # Single-CRS dataset: read CRS/res resolved once (fast-path), not per query
+        native = CRS.from_user_input(ds.index['native_crs'].iloc[0])
+        native_res = ds.index['native_res'].iloc[0]
+        assert ds._single_out_crs == (native, native_res)
+        assert ds._select_out_crs(ds.index) == (native, native_res)
+
+        # A single-CRS dataset already in the index CRS reads without reprojection
+        aligned = NAIP(self.naip_dir, prefer_native_crs=True, index_crs=native)
+        assert aligned._single_out_crs == (native, None)
+
+        # Multi-CRS datasets fall back to a per-query majority vote
+        ds._single_out_crs = None
+
+        # Files already in the index CRS: no reprojection
+        same = ds.index.copy()
+        same['native_crs'] = ds.crs  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(same) == (ds.crs, None)
+
+        # Mixed native CRSs: the majority native CRS wins
+        mixed = pd.concat([ds.index, ds.index.iloc[[0]]])
+        mixed['native_crs'] = [  # ty: ignore[invalid-assignment]
+            CRS.from_epsg(4326),
+            CRS.from_epsg(32631),
+            CRS.from_epsg(4326),
+        ]
+        out_crs, _ = ds._select_out_crs(mixed)
+        assert out_crs == CRS.from_epsg(4326)
+
+        # Disabled when prefer_native_crs is False
+        off = NAIP(self.naip_dir)
+        assert off._single_out_crs is None
+        assert off._select_out_crs(off.index) == (off.crs, None)
+
+    def test_prefer_native_crs_native_res(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS and resolution
+        n = len(ds.index)
+        ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        ds.index['native_res'] = [(2.0, 3.0)] * n
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+        ds._single_out_crs = None  # invalidate the fast-path after mutating the index
+
+        x, y, t = ds.bounds
+        size = 8
+        query = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        sample = ds[query]
+        # Read in the native CRS at the native resolution (exact, no envelope)
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(4326)
+        assert sample['bounds'][2].item() == 2.0
+        assert sample['bounds'][5].item() == 3.0
+        assert sample['image'].shape[-2:] == (size, size)
+
+    def test_reproject_slice_grid_aligned(self) -> None:
+        # The reprojected read window must be snapped to the out_res grid (and keep the
+        # query's pixel dimensions) so a native tile on that grid is read without
+        # resampling in the merge.
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        out_res = (2.0, 3.0)
+        x, y, t = ds.bounds
+        size = 8
+        index = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        rx, ry, _ = ds._reproject_slice(index, CRS.from_epsg(4326), out_res)
+
+        # Edges fall on the out_res grid
+        assert math.isclose(rx.start / out_res[0], round(rx.start / out_res[0]))
+        assert math.isclose(ry.start / out_res[1], round(ry.start / out_res[1]))
+        # Step is the native resolution and the pixel dimensions are preserved
+        assert (rx.step, ry.step) == out_res
+        assert round((rx.stop - rx.start) / rx.step) == size
+        assert round((ry.stop - ry.start) / ry.step) == size
+
+    def test_combine_reads_anchor_native_crs(self) -> None:
+        # Combined datasets read every child onto the left-most (anchor) child's
+        # native grid. Simulate the anchor having a foreign native CRS + res.
+        size = 8
+
+        def query(ds: GeoDataset) -> GeoSlice:
+            # Centered, so the box stays inside each child's footprint (the
+            # combined bounds can differ from a child's by sub-pixel amounts)
+            x, y, t = ds.bounds
+            cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
+            return (
+                slice(cx, cx + size * x.step, x.step),
+                slice(cy, cy + size * y.step, y.step),
+                t,
+            )
+
+        for combine in (NAIP.__and__, NAIP.__or__):
+            ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+            ds2 = NAIP(self.naip_dir)
+            combined = combine(ds1, ds2)
+            n = len(ds1.index)
+            ds1.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+            ds1.index['native_res'] = [(2.0, 3.0)] * n
+            ds1._single_out_crs = None  # invalidate the fast-path after mutating
+
+            sample = combined[query(combined)]
+            assert combined.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(
+                4326
+            )
+            assert sample['image'].shape[-2:] == (size, size)
+
+    def test_combine_nonanchor_override_runs_when_warped(self) -> None:
+        # A mask dataset that remaps values in a __getitem__ override must still run
+        # that override when it is the *non-anchor* child warped onto the anchor's
+        # foreign native grid. The grid spec rides through the public __getitem__, so
+        # the override (which calls super().__getitem__) sees it for free.
+        size = 8
+        anchor = NAIP(self.naip_dir, prefer_native_crs=True)
+        mask = RemapMaskNAIP(self.naip_dir)
+        n = len(anchor.index)
+        anchor.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        anchor.index['native_res'] = [(2.0, 3.0)] * n
+        anchor._single_out_crs = None  # invalidate the fast-path after mutating
+
+        # Mask is the right operand, so anchor (index 0) sets the shared grid and the
+        # mask child is warped onto the anchor's foreign native CRS.
+        combined = anchor & mask
+        x, y, t = combined.bounds
+        cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
+        query = (
+            slice(cx, cx + size * x.step, x.step),
+            slice(cy, cy + size * y.step, y.step),
+            t,
+        )
+        sample = combined[query]
+
+        # Warped onto the anchor's foreign native CRS ...
+        assert combined.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(4326)
+        # ... and the non-anchor mask's remap still ran on that warped read.
+        assert (sample['mask'] == 7).all()
+
+    def test_cached_load_warp_file_keyed_on_crs(self) -> None:
+        ds = NAIP(self.naip_dir)
+        filepath = ds.files[0]
+
+        # Native CRS is read without warping
+        native = ds._cached_load_warp_file(filepath, ds.crs)
+        assert not isinstance(native, WarpedVRT)
+        assert native.crs == ds.crs
+
+        # Foreign CRS is warped, verifying CRS is part of cache-key.
+        warped = ds._cached_load_warp_file(filepath, CRS.from_epsg(4326))
+        assert isinstance(warped, WarpedVRT)
+        assert warped.crs != native.crs
 
     @pytest.mark.parametrize('dtype', ['uint16', 'uint32'])
     def test_getitem_uint_dtype(self, dtype: str) -> None:
@@ -528,6 +861,41 @@ class TestRasterDataset:
         assert ds.res == (10.0, 10.0)
         ds.res = 20.0
 
+    def test_nodata(self, tmp_path: Path) -> None:
+        """Source nodata is preserved, and ``nodata`` overrides it."""
+        nodata = -9999.0
+        profile: dict[str, Any] = {
+            'driver': 'GTiff',
+            'height': 8,
+            'width': 8,
+            'count': 1,
+            'dtype': 'float32',
+            'crs': CRS.from_epsg(32616),
+            'transform': rasterio.transform.from_origin(0, 80, 10, 10),
+            'nodata': nodata,
+        }
+        data = np.full((1, 8, 8), 5.0, dtype='float32')
+        data[0, 0, 0] = nodata  # one genuine nodata pixel
+        with rasterio.open(tmp_path / 'image.tif', 'w', **profile) as src:
+            src.write(data)
+
+        # The file's own nodata is preserved: on read, for masking, and warping.
+        ds = RasterDataset(tmp_path)
+        image = ds[ds.bounds]['image']
+        assert (image[image != nodata] == 5).all()
+        with ds._load_warp_file(ds.files[0]) as src:
+            assert (src.dataset_mask() == 0).sum() == 1
+        with ds._load_warp_file(ds.files[0], crs=CRS.from_epsg(4326)) as vrt:
+            assert vrt.nodata == nodata
+
+        # Setting `nodata` overrides which value is treated as nodata.
+        class Override(RasterDataset):
+            nodata = 5.0
+
+        ds_override = Override(tmp_path)
+        with ds_override._load_warp_file(ds_override.files[0]) as vrt:
+            assert (vrt.dataset_mask() == 0).sum() > 1
+
     @pytest.mark.parametrize('x,y', [(-2, 2), (2, -2), (-2, -2)])
     def test_malformed_res(self, x: int, y: int) -> None:
         root = os.path.join('tests', 'data', 'raster', f'res_{x}-{y}_epsg_4087')
@@ -582,6 +950,7 @@ class TestXarrayDataset:
         x = dataset[dataset.bounds]
         assert isinstance(x, dict)
         assert isinstance(x['image'], torch.Tensor)
+        assert dataset.crs_registry[int(x['crs_index'])] == dataset.crs
 
     def test_and(self, dataset: XarrayDataset) -> None:
         ds = dataset & dataset
@@ -604,6 +973,26 @@ class TestXarrayDataset:
     def test_no_data(self, tmp_path: Path) -> None:
         with pytest.raises(DatasetNotFoundError, match='Dataset not found'):
             XarrayDataset(tmp_path)
+
+    def test_nodata(self) -> None:
+        pytest.importorskip('h5py', minversion='3.10')
+        root = os.path.join('tests', 'data', 'hdf5')
+
+        # Extend the query east of the data so part of the window is nodata.
+        ds = XarrayDataset(root)
+        x, y, t = ds.bounds
+        query = (slice(x.start, x.stop + 30, x.step), y, t)
+
+        # By default, nodata regions fall back to the source's fill (NaN here).
+        assert torch.isnan(ds[query]['image']).any()
+
+        # Setting `nodata` fills those regions with the override value instead.
+        class Override(XarrayDataset):
+            nodata = -9999.0
+
+        image = Override(root)[query]['image']
+        assert (image == -9999).any()
+        assert not torch.isnan(image).any()
 
 
 class TestVectorDataset:
@@ -640,6 +1029,22 @@ class TestVectorDataset:
         assert isinstance(x, dict)
         assert isinstance(x['mask'], torch.Tensor)
         assert torch.equal(x['mask'].unique(), torch.tensor([0, 1], dtype=torch.uint8))
+        assert dataset.crs_registry[int(x['crs_index'])] == dataset.crs
+
+    def test_getitem_foreign_crs(self, dataset: CustomVectorDataset) -> None:
+        # Rasterize into a caller-specified CRS via a CRS-tagged key (used when a
+        # combiner reads this dataset onto another dataset's grid).
+        dataset.task = 'semantic_segmentation'
+        out_crs = CRS.from_epsg(32631)
+        assert dataset.crs != out_crs
+        key = dataset._grid_key(dataset.bounds, out_crs, (10.0, 10.0))
+        x = dataset[key]
+        assert isinstance(x['mask'], torch.Tensor)
+        # out_crs is caller-provided and outside a bare dataset's own registry, so its
+        # crs_index falls back to the index CRS; a combiner re-stamps it against its
+        # unified registry (see test_combine_reads_anchor_native_crs).
+        assert out_crs not in dataset.crs_registry
+        assert dataset.crs_registry[int(x['crs_index'])] == dataset.crs
 
     def test_getitem_obj_det(self, dataset: CustomVectorDataset) -> None:
         dataset.task = 'object_detection'
@@ -882,6 +1287,7 @@ class TestIntersectionDataset:
     def test_getitem(self, dataset: IntersectionDataset) -> None:
         sample = dataset[dataset.bounds]
         assert isinstance(sample['image'], torch.Tensor)
+        assert dataset.crs_registry[int(sample['crs_index'])] == dataset.crs
 
     def test_len(self, dataset: IntersectionDataset) -> None:
         assert len(dataset) == 1
@@ -1159,6 +1565,7 @@ class TestUnionDataset:
     def test_getitem(self, dataset: UnionDataset) -> None:
         sample = dataset[dataset.bounds]
         assert isinstance(sample['image'], torch.Tensor)
+        assert dataset.crs_registry[int(sample['crs_index'])] == dataset.crs
 
     def test_len(self, dataset: UnionDataset) -> None:
         assert len(dataset) == 2
