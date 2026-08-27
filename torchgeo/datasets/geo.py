@@ -18,7 +18,6 @@ import geopandas as gpd
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import pyproj
 import rasterio
 import rasterio.features
 import rasterio.merge
@@ -48,6 +47,7 @@ from .utils import (
     GeoSlice,
     Path,
     Sample,
+    _cached_transformer,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -103,6 +103,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     index: GeoDataFrame
     paths: Path | Iterable[Path]
     _res = (0.0, 0.0)
+    _prefer_native_crs = False
+    _crs_registry: list[PROJ_CRS] | None = None
 
     #: Glob expression used to search for files.
     #:
@@ -174,6 +176,64 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             t.step,
         ]
         return torch.tensor(bounds)
+
+    def _select_out_crs(
+        self, df: GeoDataFrame
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None]:
+        """Choose the CRS and resolution to read a query into.
+
+        If :attr:`_prefer_native_crs` is set and every file matched by a query
+        shares a single native CRS that differs from the index CRS, that CRS and
+        its native resolution are returned so the data can be read without
+        warping. Otherwise the index CRS is returned with no resolution.
+
+        Args:
+            df: The rows of :attr:`index` matched by a query.
+
+        Returns:
+            A tuple of the CRS to read into and, when reading natively, the
+            native resolution in that CRS (else ``None``).
+        """
+        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
+            native = df['native_crs'].iloc[0]
+            if native != self.crs:
+                return native, df['native_res'].iloc[0]
+        return self.crs, None
+
+    def _reproject_slice(
+        self, index: GeoSlice, out_crs: PROJ_CRS, out_res: tuple[float, float]
+    ) -> tuple[slice, slice, slice]:
+        """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
+
+        The query center is reprojected (a point, so without the inflation a
+        reprojected box would incur) and a box is rebuilt around it at *out_res*,
+        preserving the pixel dimensions of the query. The box origin is snapped to the
+        *out_res* grid so that reads of data tiled on that grid are pixel-aligned and
+        are not resampled in the merge (the point of reading in the native CRS).
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: :term:`coordinate reference system (CRS)` to reproject into.
+            out_res: Resolution in units of *out_crs*.
+
+        Returns:
+            The reprojected slice in *out_crs*.
+        """
+        x, y, t = self._disambiguate_slice(index)
+        width = round((x.stop - x.start) / x.step)
+        height = round((y.stop - y.start) / y.step)
+        transformer = _cached_transformer(self.crs, out_crs)
+        cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
+        xres, yres = out_res
+        # Snap the lower-left corner to the out_res grid, then extend by the pixel
+        # dimensions, so the box edges fall on grid lines shared with the data tiles.
+        left = (cx - width * xres / 2) // xres * xres
+        bottom = (cy - height * yres / 2) // yres * yres
+        return (
+            slice(left, left + width * xres, xres),
+            slice(bottom, bottom + height * yres, yres),
+            t,
+        )
 
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
@@ -287,7 +347,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         A sample's ``crs_index`` key is an integer index into this list, letting the
         per-sample :term:`coordinate reference system (CRS)` travel as a tensor (see
         :data:`~torchgeo.datasets.utils.Sample`). A plain dataset reads every query in
-        :attr:`crs`, so the registry holds that single CRS.
+        :attr:`crs`, so the registry holds that single CRS; subclasses that read in
+        multiple CRSs (e.g. :class:`RasterDataset` native-CRS reads) override this.
 
         Returns:
             The CRSs this dataset can emit, in index order.
@@ -442,6 +503,7 @@ class RasterDataset(GeoDataset):
         transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
         time_series: bool = False,
+        prefer_native_crs: bool = False,
     ) -> None:
         """Initialize a new RasterDataset instance.
 
@@ -461,10 +523,18 @@ class RasterDataset(GeoDataset):
                 (``is_image=False``), single-band data may have the channel
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
+            prefer_native_crs: if True, queries whose files all share a single
+                native CRS are read in that CRS, at its native resolution,
+                without warping, instead of the index CRS. Ignored if *crs* is
+                specified. Samples may then be returned in different CRSs, which
+                is unsuitable for stitching gridded predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.10
+           The *prefer_native_crs* parameter.
 
         .. versionadded:: 0.9
            The *time_series* parameter.
@@ -477,6 +547,7 @@ class RasterDataset(GeoDataset):
         self.transforms = transforms
         self.cache = cache
         self.time_series = time_series
+        self._prefer_native_crs = prefer_native_crs and crs is None
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
@@ -486,6 +557,8 @@ class RasterDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
+        native_crss = []
+        native_ress = []
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -502,10 +575,17 @@ class RasterDataset(GeoDataset):
                     if crs is None:
                         with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
                             crs = PROJ_CRS.from_user_input(vrt.crs)
+                    with rasterio.open(filepath) as src:
+                        # Normalize to a pyproj CRS once here so the per-query read
+                        # path can compare/transform without reconverting (~54 us each).
+                        native_crs = PROJ_CRS.from_user_input(src.crs or src.gcps[1])
+                        native_res = src.res
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
                     geometries.append(footprint)
+                    native_crss.append(native_crs)
+                    native_ress.append(native_res)
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -543,9 +623,38 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {'filepath': filepaths}
+        data = {
+            'filepath': filepaths,
+            'native_crs': native_crss,
+            'native_res': native_ress,
+        }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+
+    @property
+    def crs_registry(self) -> list[PROJ_CRS]:
+        """Distinct CRSs a query may be read in: index CRS first, then per-file natives.
+
+        Derived from the ``native_crs`` index column (the same source
+        :meth:`_select_out_crs` reads) and cached after first access, so per-read
+        ``crs_index`` stamping stays O(1) instead of rebuilding the registry each call.
+        Subclasses with a custom index that omits ``native_crs`` read only in
+        :attr:`crs`. (Mutating the index after first access requires resetting
+        :attr:`_crs_registry` to ``None`` — the tests do this.)
+
+        Returns:
+            The CRSs this dataset can emit, in first-appearance order.
+
+        .. versionadded:: 0.11
+        """
+        if self._crs_registry is None:
+            if 'native_crs' not in self.index:
+                self._crs_registry = [self.crs]
+            else:
+                self._crs_registry = list(
+                    dict.fromkeys([self.crs, *self.index['native_crs']])
+                )
+        return self._crs_registry
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
@@ -570,7 +679,10 @@ class RasterDataset(GeoDataset):
                 f'index: {index} not found in dataset with bounds: {self.bounds}'
             )
 
-        out_crs = self.crs
+        out_crs, out_res = self._select_out_crs(df)
+        if out_res is not None:
+            index = self._reproject_slice(index, out_crs, out_res)
+            x, y, t = self._disambiguate_slice(index)
 
         if self.separate_files:
             data_list: list[Tensor] = []
@@ -1226,7 +1338,7 @@ class VectorDataset(GeoDataset):
                 src = gpd.read_file(filepath, layer=self.layer)
 
             # We need to know the bounding box of the query in the source CRS
-            transformer = pyproj.Transformer.from_crs(out_crs, src.crs, always_xy=True)
+            transformer = _cached_transformer(out_crs, src.crs)
             (minx, miny) = transformer.transform(x.start, y.start)
             (maxx, maxy) = transformer.transform(x.stop, y.stop)
 
@@ -1544,6 +1656,9 @@ class IntersectionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         # Spatial intersection
         index1 = dataset1.index.reset_index()
@@ -1718,6 +1833,9 @@ class UnionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         self.index = pd.concat([dataset1.index, dataset2.index])
 

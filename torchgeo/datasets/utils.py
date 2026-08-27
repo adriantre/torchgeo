@@ -9,6 +9,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
+import functools
 import glob
 import hashlib
 import importlib
@@ -28,6 +29,7 @@ from typing import Any, TypeAlias, cast, overload
 import numpy as np
 import pandas as pd
 import pyogrio
+import pyproj
 import rasterio
 import shapely.affinity
 import torch
@@ -81,6 +83,23 @@ Path: TypeAlias = str | os.PathLike[str]  # noqa: UP040
 #: the dataset's :attr:`~torchgeo.datasets.geo.GeoDataset.crs_registry`, so the
 #: per-sample :term:`coordinate reference system (CRS)` travels as a tensor.
 Sample: TypeAlias = dict[str, Tensor]  # noqa: UP040
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Transformer:
+    """Cache CRS transformers, which are expensive to construct (~0.5 ms each).
+
+    Reads reproject the query into the data's native CRS on every sample, so the
+    handful of distinct ``(src, dst)`` pipelines are reused rather than rebuilt.
+
+    Args:
+        src_crs: Source :term:`coordinate reference system (CRS)`.
+        dst_crs: Destination :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        A transformer from *src_crs* to *dst_crs*.
+    """
+    return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
