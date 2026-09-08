@@ -122,7 +122,7 @@ class SouthAmericaSoybean(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted files already exist
-        if self.files:
+        if self._list_files():
             return
         assert isinstance(self.paths, str | os.PathLike)
 

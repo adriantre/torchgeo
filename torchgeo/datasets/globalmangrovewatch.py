@@ -142,14 +142,14 @@ class GlobalMangroveWatch(RasterDataset):
             paths, crs, res, transforms=transforms, cache=cache, time_series=time_series
         )
 
-    @property
-    def files(self) -> list[str]:
-        """A list of all files in the dataset, restricted to *years*.
+    def _list_files(self) -> list[str]:
+        """List all files in the dataset, restricted to *years*.
 
         Returns:
-            All files belonging to one of the requested years.
+            All files belonging to one of the requested years
+            (empty list if none are found).
         """
-        return [f for f in super().files if self._year(f) in self.years]
+        return [f for f in super()._list_files() if self._year(f) in self.years]
 
     def _year(self, filepath: Path) -> int | None:
         """Extract the year of a file from its filename.
@@ -172,7 +172,7 @@ class GlobalMangroveWatch(RasterDataset):
             RuntimeError: If an existing archive is corrupted.
         """
         # Check which years have already been extracted
-        extracted = {self._year(f) for f in self.files}
+        extracted = {self._year(f) for f in self._list_files()}
         todo = [year for year in self.years if year not in extracted]
         if not todo:
             return
