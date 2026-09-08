@@ -620,11 +620,12 @@ class RasterDataset(GeoDataset):
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
                 native CRS are read in that CRS, at its native resolution,
-                without warping. The index then uses a global equal-area CRS
-                (EPSG:6933) for bookkeeping rather than the first file's CRS, so
-                the dataset stays valid across UTM zones. Ignored if *crs* is
-                specified. Samples may be returned in different CRSs, which is
-                unsuitable for stitching gridded predictions back together.
+                without warping. The index then uses that shared native CRS; a
+                dataset spanning multiple native CRSs instead falls back to a
+                global equal-area CRS (EPSG:6933) so the index stays valid across
+                UTM zones. Ignored if *crs* is specified. Samples may be returned
+                in different CRSs, which is unsuitable for stitching gridded
+                predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -646,12 +647,6 @@ class RasterDataset(GeoDataset):
         self.time_series = time_series
         self._prefer_native_crs = prefer_native_crs and crs is None
 
-        # When reading natively, the index CRS is pure bookkeeping, so use a global
-        # equal-area CRS (EASE-Grid 2.0) instead of the first file's UTM zone. This
-        # keeps the index valid across UTM zones and area-weighted sampling uniform.
-        if self._prefer_native_crs:
-            crs = PROJ_CRS.from_epsg(6933)
-
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
 
@@ -662,6 +657,14 @@ class RasterDataset(GeoDataset):
         geometries = []
         native_crss = []
         native_ress = []
+
+        # For native reads, choose the index CRS from the files themselves: if they
+        # all share one native CRS, use it so reads need no reprojection; otherwise
+        # fall back to a global equal-area CRS (EASE-Grid 2.0) so the index spans UTM
+        # zones and keeps area-weighted sampling uniform.
+        if self._prefer_native_crs:
+            crs = self._select_index_crs(filename_regex)
+
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -733,6 +736,33 @@ class RasterDataset(GeoDataset):
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+
+    def _select_index_crs(self, filename_regex: re.Pattern[str]) -> PROJ_CRS:
+        """Choose the index CRS for a native-reading dataset from its files.
+
+        Returns the single native CRS shared by every file, so reads need no
+        reprojection and the index matches the data. When the files span more than
+        one native CRS, returns EPSG:6933 (EASE-Grid 2.0), a global equal-area CRS
+        that keeps the index valid across UTM zones. Reads each file's CRS once, so
+        it opens every file (metadata only) before the main indexing loop.
+
+        Args:
+            filename_regex: Compiled regex identifying dataset files.
+
+        Returns:
+            The CRS to use for the dataset index.
+        """
+        native_crss = []
+        for filepath in self.files:
+            if re.match(filename_regex, os.path.basename(filepath)) is None:
+                continue
+            try:
+                with rasterio.open(filepath) as src:
+                    native_crss.append(PROJ_CRS.from_user_input(src.crs or src.gcps[1]))
+            except rasterio.errors.RasterioIOError:
+                continue
+        distinct = list(dict.fromkeys(native_crss))
+        return distinct[0] if len(distinct) == 1 else PROJ_CRS.from_epsg(6933)
 
     @property
     def crs_registry(self) -> list[PROJ_CRS]:
