@@ -6,7 +6,6 @@
 import csv
 import os
 from collections.abc import Callable, Iterable
-from typing import cast
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -23,6 +22,7 @@ from .utils import (
     check_integrity,
     download_and_extract_archive,
     download_url,
+    single_path,
 )
 
 
@@ -150,8 +150,7 @@ class EuroCrops(VectorDataset):
         if self.files and not self.checksum:
             return True
 
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
 
         filepath = os.path.join(paths, self.hcat_fname)
         if not check_integrity(filepath, self.hcat_md5 if self.checksum else None):
@@ -168,8 +167,7 @@ class EuroCrops(VectorDataset):
         if self._check_integrity():
             print('Files already downloaded and verified')
             return
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         download_url(
             self.base_url + self.hcat_fname,
             paths,
@@ -191,8 +189,7 @@ class EuroCrops(VectorDataset):
                 (defaults to all classes)
         """
         if not classes:
-            assert isinstance(self.paths, str | os.PathLike)
-            paths = cast(Path, self.paths)
+            paths = single_path(self.paths)
             classes = []
             filepath = os.path.join(paths, self.hcat_fname)
             with open(filepath) as f:

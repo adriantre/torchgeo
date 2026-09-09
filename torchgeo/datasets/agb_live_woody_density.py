@@ -6,7 +6,6 @@
 import json
 import os
 from collections.abc import Callable, Iterable
-from typing import cast
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -14,7 +13,7 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, download_url
+from .utils import Path, Sample, download_url, single_path
 
 
 class AbovegroundLiveWoodyBiomassDensity(RasterDataset):
@@ -114,8 +113,7 @@ class AbovegroundLiveWoodyBiomassDensity(RasterDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         download_url(self.url, paths, self.base_filename)
 
         with open(os.path.join(paths, self.base_filename)) as f:

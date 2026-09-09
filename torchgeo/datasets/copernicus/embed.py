@@ -3,9 +3,7 @@
 
 """Copernicus-Embed dataset."""
 
-import os
 from collections.abc import Callable, Iterable
-from typing import cast
 
 import einops
 import torch
@@ -15,7 +13,7 @@ from pyproj import CRS
 
 from ..errors import DatasetNotFoundError
 from ..geo import RasterDataset
-from ..utils import Path, Sample, download_url
+from ..utils import Path, Sample, download_url, single_path
 
 
 class CopernicusEmbed(RasterDataset):
@@ -94,8 +92,7 @@ class CopernicusEmbed(RasterDataset):
             return
 
         if self.download:
-            assert isinstance(self.paths, str | os.PathLike)
-            paths = cast(Path, self.paths)
+            paths = single_path(self.paths)
             download_url(self.url, paths, sha256=self.sha256 if self.checksum else None)
         else:
             raise DatasetNotFoundError(self)

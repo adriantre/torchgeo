@@ -6,7 +6,6 @@
 import glob
 import os
 from collections.abc import Callable, Iterable
-from typing import cast
 
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
@@ -14,7 +13,7 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, download_url, extract_archive
+from .utils import Path, Sample, download_url, extract_archive, single_path
 
 
 class Esri2020(RasterDataset):
@@ -121,8 +120,7 @@ class Esri2020(RasterDataset):
             return
 
         # Check if the zip files have already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         pathname = os.path.join(paths, self.zipfile)
         if glob.glob(pathname):
             self._extract()
@@ -138,14 +136,12 @@ class Esri2020(RasterDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         download_url(self.url, paths, filename=self.zipfile, md5=self.md5)
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         extract_archive(os.path.join(paths, self.zipfile))
 
     def plot(

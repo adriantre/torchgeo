@@ -6,7 +6,7 @@
 import glob
 import os
 from collections.abc import Callable, Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 import torch
@@ -22,6 +22,7 @@ from .utils import (
     download_url,
     extract_archive,
     quantile_normalization,
+    single_path,
 )
 
 
@@ -198,7 +199,7 @@ class L7Irish(IntersectionDataset):
         if not isinstance(self.paths, str | os.PathLike):
             return
 
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
 
         for classname in [L7IrishImage, L7IrishMask]:
             pathname = os.path.join(paths, '**', classname.filename_glob)
@@ -223,8 +224,7 @@ class L7Irish(IntersectionDataset):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         for biome, sha256 in self.sha256s.items():
             download_url(
                 self.url.format(biome), paths, sha256=sha256 if self.checksum else None
@@ -232,8 +232,7 @@ class L7Irish(IntersectionDataset):
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         pathname = os.path.join(paths, '*.tar.gz')
         for tarfile in glob.iglob(pathname):
             extract_archive(tarfile)
