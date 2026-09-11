@@ -92,6 +92,11 @@ class CustomRasterDataset(RasterDataset):
         return self._dtype
 
 
+class TileRasterDataset(RasterDataset):
+    filename_glob = '*.tif'
+    filename_regex = r'^tile_\d+'
+
+
 class CustomVectorDataset(VectorDataset):
     filename_glob = '*.geojson'
     date_format = '%Y'
@@ -592,25 +597,57 @@ class TestRasterDataset:
         pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
         assert pinned._prefer_native_crs is False
 
+    def test_prefer_native_crs_multi_crs_index(self, tmp_path: Path) -> None:
+        # Files spanning multiple native CRSs cannot share one, so the index falls
+        # back to the global equal-area CRS (EPSG:6933).
+        profile: dict[str, Any] = {
+            'driver': 'GTiff',
+            'height': 4,
+            'width': 4,
+            'count': 1,
+            'dtype': 'uint8',
+            'transform': rasterio.transform.from_origin(500000, 4649776, 10, 10),
+        }
+        for name, epsg in (('tile_0', 32618), ('tile_1', 32619)):
+            profile['crs'] = CRS.from_epsg(epsg)
+            with rasterio.open(tmp_path / f'{name}.tif', 'w', **profile) as dst:
+                dst.write(np.ones((1, 4, 4), dtype='uint8'))
+        # A file matching the glob but not the regex is ignored, as is an unreadable
+        # file, in both the CRS pre-pass and the main indexing loop
+        (tmp_path / 'decoy.tif').write_text('not indexed')
+        (tmp_path / 'tile_2.tif').write_text('not a tiff')
+
+        ds = TileRasterDataset(paths=tmp_path, prefer_native_crs=True)
+        assert ds.crs == CRS.from_epsg(6933)
+        assert {c.to_epsg() for c in ds.index['native_crs']} == {32618, 32619}
+
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
-        # Native CRS equals index CRS: no native read
+        # A single-CRS dataset uses its shared native CRS as the index, so files are
+        # already in the index CRS and reads need no reprojection
+        native = CRS.from_user_input(ds.index['native_crs'].iloc[0])
+        assert ds.crs == native
         assert ds._select_out_crs(ds.index) == (ds.crs, None)
 
-        # All files share a single foreign native CRS: read in that CRS and res
-        foreign = ds.index.copy()
-        foreign['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
-        out_crs, out_res = ds._select_out_crs(foreign)
-        assert out_crs == CRS.from_epsg(4326)
-        assert out_res == ds.index['native_res'].iloc[0]
+        # Files differ from the index CRS: read in their shared native CRS and res
+        differ = ds.index.copy()
+        differ['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        differ['native_res'] = [(2.0, 3.0)] * len(differ)
+        assert ds._select_out_crs(differ) == (CRS.from_epsg(4326), (2.0, 3.0))
 
-        # Mixed native CRSs: fall back to the index CRS
-        mixed = foreign.copy()
-        mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
-        assert ds._select_out_crs(mixed) == (ds.crs, None)
+        # Mixed native CRSs: the majority native CRS wins
+        mixed = pd.concat([ds.index, ds.index.iloc[[0]]])
+        mixed['native_crs'] = [  # ty: ignore[invalid-assignment]
+            CRS.from_epsg(4326),
+            CRS.from_epsg(32631),
+            CRS.from_epsg(4326),
+        ]
+        out_crs, _ = ds._select_out_crs(mixed)
+        assert out_crs == CRS.from_epsg(4326)
 
         # Disabled when prefer_native_crs is False
-        assert NAIP(self.naip_dir)._select_out_crs(foreign) == (ds.crs, None)
+        off = NAIP(self.naip_dir)
+        assert off._select_out_crs(off.index) == (off.crs, None)
 
     def test_prefer_native_crs_native_res(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
@@ -663,10 +700,13 @@ class TestRasterDataset:
         size = 8
 
         def query(ds: GeoDataset) -> GeoSlice:
+            # Centered, so the box stays inside each child's footprint (the
+            # combined bounds can differ from a child's by sub-pixel amounts)
             x, y, t = ds.bounds
+            cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
             return (
-                slice(x.start, x.start + size * x.step, x.step),
-                slice(y.start, y.start + size * y.step, y.step),
+                slice(cx, cx + size * x.step, x.step),
+                slice(cy, cy + size * y.step, y.step),
                 t,
             )
 

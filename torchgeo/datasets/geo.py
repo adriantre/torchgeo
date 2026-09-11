@@ -183,22 +183,24 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     ) -> tuple[PROJ_CRS, tuple[float, float] | None]:
         """Choose the CRS and resolution to read a query into.
 
-        If :attr:`_prefer_native_crs` is set and every file matched by a query
-        shares a single native CRS that differs from the index CRS, that CRS and
-        its native resolution are returned so the data can be read without
-        warping. Otherwise the index CRS is returned with no resolution.
+        If :attr:`_prefer_native_crs` is set, the data is read in the native CRS
+        held by the most files a query matched (the majority); any files in other
+        CRSs are warped onto it. This anchors a boundary-straddling query on a
+        native zone rather than the index CRS. Otherwise the index CRS is returned.
 
         Args:
             df: The rows of :attr:`index` matched by a query.
 
         Returns:
-            A tuple of the CRS to read into and, when reading natively, the
-            native resolution in that CRS (else ``None``).
+            A tuple of the CRS to read into and, when reading natively, the native
+            resolution in that CRS (else ``None``).
         """
-        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
-            native = df['native_crs'].iloc[0]
-            if native != self.crs:
-                return native, df['native_res'].iloc[0]
+        if self._prefer_native_crs:
+            # Majority native CRS wins; ties broken by match order
+            out_crs = df['native_crs'].value_counts().index[0]
+            if out_crs != self.crs:
+                out_res = df.loc[df['native_crs'] == out_crs, 'native_res'].iloc[0]
+                return out_crs, out_res
         return self.crs, None
 
     def _reproject_slice(
@@ -618,9 +620,12 @@ class RasterDataset(GeoDataset):
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
                 native CRS are read in that CRS, at its native resolution,
-                without warping, instead of the index CRS. Ignored if *crs* is
-                specified. Samples may then be returned in different CRSs, which
-                is unsuitable for stitching gridded predictions back together.
+                without warping. The index then uses that shared native CRS; a
+                dataset spanning multiple native CRSs instead falls back to a
+                global equal-area CRS (EPSG:6933) so the index stays valid across
+                UTM zones. Ignored if *crs* is specified. Samples may be returned
+                in different CRSs, which is unsuitable for stitching gridded
+                predictions back together.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -652,6 +657,14 @@ class RasterDataset(GeoDataset):
         geometries = []
         native_crss = []
         native_ress = []
+
+        # For native reads, choose the index CRS from the files themselves: if they
+        # all share one native CRS, use it so reads need no reprojection; otherwise
+        # fall back to a global equal-area CRS (EASE-Grid 2.0) so the index spans UTM
+        # zones and keeps area-weighted sampling uniform.
+        if self._prefer_native_crs:
+            crs = self._select_index_crs(filename_regex)
+
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -723,6 +736,33 @@ class RasterDataset(GeoDataset):
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+
+    def _select_index_crs(self, filename_regex: re.Pattern[str]) -> PROJ_CRS:
+        """Choose the index CRS for a native-reading dataset from its files.
+
+        Returns the single native CRS shared by every file, so reads need no
+        reprojection and the index matches the data. When the files span more than
+        one native CRS, returns EPSG:6933 (EASE-Grid 2.0), a global equal-area CRS
+        that keeps the index valid across UTM zones. Reads each file's CRS once, so
+        it opens every file (metadata only) before the main indexing loop.
+
+        Args:
+            filename_regex: Compiled regex identifying dataset files.
+
+        Returns:
+            The CRS to use for the dataset index.
+        """
+        native_crss = []
+        for filepath in self.files:
+            if re.match(filename_regex, os.path.basename(filepath)) is None:
+                continue
+            try:
+                with rasterio.open(filepath) as src:
+                    native_crss.append(PROJ_CRS.from_user_input(src.crs or src.gcps[1]))
+            except rasterio.errors.RasterioIOError:
+                continue
+        distinct = list(dict.fromkeys(native_crss))
+        return distinct[0] if len(distinct) == 1 else PROJ_CRS.from_epsg(6933)
 
     @property
     def crs_registry(self) -> list[PROJ_CRS]:
