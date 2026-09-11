@@ -493,12 +493,134 @@ class TestRasterDataset:
             == ds1.crs_registry[int(x['crs_index'])]
         )
 
+    def test_crs_registry_multi_crs(self) -> None:
+        """The registry aggregates the distinct native CRSs, deduped and ordered.
+
+        A dataset spanning multiple CRS zones exposes each as a stable index (index
+        CRS first, then natives in first-appearance order), derived from the same
+        ``native_crs`` column ``_select_out_crs`` reads, and identical after the
+        process boundary so a native read resolves consistently across ranks/workers.
+        """
+        ds = NAIP(self.naip_dir)
+        index_crs = ds.crs
+        a, b = CRS.from_epsg(4326), CRS.from_epsg(32631)
+        # Simulate files spanning two foreign zones, with a repeat to exercise dedup
+        n = len(ds.index)
+        ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        reg = ds.crs_registry
+        assert reg[0] == index_crs  # index CRS is always index 0
+        assert set(reg) == {index_crs, a, b}
+        assert len(reg) == 3  # deduped, no repeats
+
+        assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
+    def test_crs_registry_without_native_crs_column(self) -> None:
+        # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
+        # registry then holds only the index CRS and every sample resolves to it.
+        ds = NAIP(self.naip_dir)
+        ds.index = ds.index.drop(columns=['native_crs', 'native_res'])
+        assert ds.crs_registry == [ds.crs]
+        x = ds[ds.bounds]
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
+
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
         naip2 = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
         assert naip1.crs != naip2.crs
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
+
+    def test_native_crs_res_columns(self) -> None:
+        native = NAIP(self.naip_dir)
+        # Without reprojection, the native CRS matches the index CRS
+        assert (native.index['native_crs'] == native.crs).all()
+
+        # After reprojection, the index CRS changes but the native columns do not
+        reprojected = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
+        assert reprojected.crs != native.crs
+        assert (reprojected.index['native_crs'] == native.crs).all()
+        assert reprojected.index['native_res'].equals(native.index['native_res'])
+
+    def test_prefer_native_crs_flag(self) -> None:
+        assert NAIP(self.naip_dir)._prefer_native_crs is False
+        assert NAIP(self.naip_dir, prefer_native_crs=True)._prefer_native_crs is True
+        # An explicit CRS pins the output CRS, disabling native preference
+        pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+
+    def test_select_out_crs(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Native CRS equals index CRS: no native read
+        assert ds._select_out_crs(ds.index) == (ds.crs, None)
+
+        # All files share a single foreign native CRS: read in that CRS and res
+        foreign = ds.index.copy()
+        foreign['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        out_crs, out_res = ds._select_out_crs(foreign)
+        assert out_crs == CRS.from_epsg(4326)
+        assert out_res == ds.index['native_res'].iloc[0]
+
+        # Mixed native CRSs: fall back to the index CRS
+        mixed = foreign.copy()
+        mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(mixed) == (ds.crs, None)
+
+        # Disabled when prefer_native_crs is False
+        assert NAIP(self.naip_dir)._select_out_crs(foreign) == (ds.crs, None)
+
+    def test_prefer_native_crs_native_res(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS and resolution
+        n = len(ds.index)
+        ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        ds.index['native_res'] = [(2.0, 3.0)] * n
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        x, y, t = ds.bounds
+        size = 8
+        query = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        sample = ds[query]
+        # Read in the native CRS at the native resolution (exact, no envelope)
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(4326)
+        assert sample['bounds'][2].item() == 2.0
+        assert sample['bounds'][5].item() == 3.0
+        assert sample['image'].shape[-2:] == (size, size)
+
+    def test_reproject_slice_grid_aligned(self) -> None:
+        # The reprojected read window must be snapped to the out_res grid (and keep the
+        # query's pixel dimensions) so a native tile on that grid is read without
+        # resampling in the merge.
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        out_res = (2.0, 3.0)
+        x, y, t = ds.bounds
+        size = 8
+        index = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        rx, ry, _ = ds._reproject_slice(index, CRS.from_epsg(4326), out_res)
+
+        # Edges fall on the out_res grid
+        assert math.isclose(rx.start / out_res[0], round(rx.start / out_res[0]))
+        assert math.isclose(ry.start / out_res[1], round(ry.start / out_res[1]))
+        # Step is the native resolution and the pixel dimensions are preserved
+        assert (rx.step, ry.step) == out_res
+        assert round((rx.stop - rx.start) / rx.step) == size
+        assert round((ry.stop - ry.start) / ry.step) == size
+
+    def test_intersection_unpins_native_crs(self) -> None:
+        ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds2 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds1 & ds2
+        assert ds1._prefer_native_crs is False
+        assert ds2._prefer_native_crs is False
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)
