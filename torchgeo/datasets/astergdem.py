@@ -90,7 +90,7 @@ class AsterGDEM(RasterDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the extracted files already exists
-        if self.files:
+        if self._list_files():
             return
 
         raise DatasetNotFoundError(self)

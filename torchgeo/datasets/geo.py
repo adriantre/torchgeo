@@ -313,10 +313,24 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         Returns:
             All files in the dataset.
 
+        Raises:
+            DatasetNotFoundError: If no files are found.
+
         .. versionadded:: 0.5
         """
+        files = self._list_files()
+        if not files:
+            raise DatasetNotFoundError(self)
+        return files
+
+    def _list_files(self) -> list[str]:
+        """List all files in the dataset, or an empty list if none are found.
+
+        Returns:
+            A sorted list of all files in the dataset.
+        """
         if isinstance(self.paths, str | os.PathLike):
-            paths: Iterable[Path] = [cast(Path, self.paths)]
+            paths: list[Path] = [cast(Path, self.paths)]
         else:
             paths = self.paths
 
@@ -326,7 +340,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             found = set(find_files(path, self.filename_glob))
             if found:
                 files.update(found)
-            elif not os.path.isdir(path) and not hasattr(self, 'download'):
+            elif not os.path.isdir(path):
                 warnings.warn(
                     f"Could not find any relevant files for provided path '{path}'. "
                     f'Path was ignored.',
