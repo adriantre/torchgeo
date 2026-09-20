@@ -6,7 +6,7 @@
 import os
 import re
 from collections.abc import Callable, Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,7 +16,14 @@ from pyproj import CRS
 
 from .errors import DatasetNotFoundError
 from .geo import RasterDataset
-from .utils import Path, Sample, check_integrity, download_url, extract_archive
+from .utils import (
+    Path,
+    Sample,
+    check_integrity,
+    download_url,
+    extract_archive,
+    single_path,
+)
 
 
 class GlobalMangroveWatch(RasterDataset):
@@ -177,10 +184,7 @@ class GlobalMangroveWatch(RasterDataset):
         if not todo:
             return
 
-        assert isinstance(self.paths, str | os.PathLike), (
-            'paths must be a single root directory to download or extract data'
-        )
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
 
         for year in todo:
             filepath = os.path.join(paths, self.zipfile_glob.replace('*', str(year)))

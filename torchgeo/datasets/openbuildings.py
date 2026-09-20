@@ -6,7 +6,7 @@
 import glob
 import os
 from collections.abc import Callable, Iterable
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -23,7 +23,7 @@ from shapely.geometry.base import BaseGeometry
 
 from .errors import DatasetNotFoundError
 from .geo import VectorDataset
-from .utils import GeoSlice, Path, Sample, check_integrity
+from .utils import GeoSlice, Path, Sample, check_integrity, single_path
 
 
 class OpenBuildings(VectorDataset):
@@ -231,8 +231,7 @@ class OpenBuildings(VectorDataset):
         .. versionchanged:: 0.5
            *root* was renamed to *paths*.
         """
-        assert isinstance(paths, str | os.PathLike)
-        paths = cast(Path, paths)
+        paths = single_path(paths)
         self.paths = paths
         if isinstance(res, int | float):
             res = (res, res)
@@ -360,8 +359,7 @@ class OpenBuildings(VectorDataset):
     def _verify(self) -> None:
         """Verify the integrity of the dataset."""
         # Check if the zip files have already been downloaded and checksum
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         pathname = os.path.join(paths, self.zipfile_glob)
         i = 0
         for zipfile in glob.iglob(pathname):

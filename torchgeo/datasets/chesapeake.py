@@ -7,7 +7,7 @@ import glob
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -26,7 +26,7 @@ from pyproj import CRS
 from .errors import DatasetNotFoundError
 from .geo import GeoDataset, RasterDataset
 from .nlcd import NLCD
-from .utils import GeoSlice, Path, Sample, download_url, extract_archive
+from .utils import GeoSlice, Path, Sample, download_url, extract_archive, single_path
 
 
 class Chesapeake(RasterDataset, ABC):
@@ -275,8 +275,7 @@ class Chesapeake(RasterDataset, ABC):
             return
 
         # Check if the zip file has already been downloaded
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         if glob.glob(os.path.join(paths, '**', '*.zip'), recursive=True):
             self._extract()
             return
@@ -291,16 +290,14 @@ class Chesapeake(RasterDataset, ABC):
 
     def _download(self) -> None:
         """Download the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         for year, sha256 in self.sha256s.items():
             url = self.url.format(state=self.state, year=year)
             download_url(url, paths, sha256=sha256 if self.checksum else None)
 
     def _extract(self) -> None:
         """Extract the dataset."""
-        assert isinstance(self.paths, str | os.PathLike)
-        paths = cast(Path, self.paths)
+        paths = single_path(self.paths)
         for file in glob.iglob(os.path.join(paths, '**', '*.zip'), recursive=True):
             extract_archive(file)
 
