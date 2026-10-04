@@ -520,7 +520,7 @@ class TestRasterDataset:
             os.path.join(root, 'res_2-2_epsg_4087'),
             os.path.join(root, 'res_4-4_epsg_4326'),
         ]
-        ds = RasterDataset(paths)
+        ds = RasterDataset(paths, prefer_native_crs=True)
         splits = random_bbox_assignment(ds, [0.5, 0.5])
         # Each split holds one of the two files, but decodes crs_index like ds
         assert all(split.crs_registry == ds.crs_registry for split in splits)
@@ -544,14 +544,10 @@ class TestRasterDataset:
         assert not math.isclose(naip1.res[1], naip2.res[1])
 
     def test_native_crs_column(self) -> None:
-        native = NAIP(self.naip_dir)
-        # Without reprojection, the native CRS matches the index CRS
+        native = NAIP(self.naip_dir, prefer_native_crs=True)
         assert (native.index['native_crs'] == native.crs).all()
-
-        # After reprojection, the index CRS changes but the native column does not
-        reprojected = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
-        assert reprojected.crs != native.crs
-        assert (reprojected.index['native_crs'] == native.crs).all()
+        # Without native reads, the index has no native columns
+        assert 'native_crs' not in NAIP(self.naip_dir).index
 
     def test_prefer_native_crs_flag(self) -> None:
         assert NAIP(self.naip_dir)._prefer_native_crs is False

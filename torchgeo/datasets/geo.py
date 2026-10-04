@@ -614,13 +614,15 @@ class RasterDataset(GeoDataset):
                             crs = PROJ_CRS.from_user_input(vrt.crs)
                         # Normalize to a pyproj CRS once here so the per-query read
                         # path can compare/transform without reconverting.
-                        native_crs = PROJ_CRS.from_user_input(src_crs)
+                        if self._prefer_native_crs:
+                            native_crs = PROJ_CRS.from_user_input(src_crs)
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
                     geometries.append(footprint)
-                    native_crss.append(native_crs)
-                    native_origins.append((src_transform.c, src_transform.f))
+                    if self._prefer_native_crs:
+                        native_crss.append(native_crs)
+                        native_origins.append((src_transform.c, src_transform.f))
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -658,11 +660,10 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {
-            'filepath': filepaths,
-            'native_crs': native_crss,
-            'native_origin': native_origins,
-        }
+        data: dict[str, list[Any]] = {'filepath': filepaths}
+        if self._prefer_native_crs:
+            data['native_crs'] = native_crss
+            data['native_origin'] = native_origins
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
         # Build before any split copies the dataset, so all splits share the registry
