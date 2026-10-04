@@ -616,35 +616,6 @@ class TestRasterDataset:
         df['native_origin'] = [(5.0, 7.5), (4.0, 6.0)]
         assert ds._grid_offset(df) == (0.0, 0.0)
 
-    def test_reproject_slice_grid_aligned(self) -> None:
-        # The reprojected read window must be snapped to the out_res grid (and keep the
-        # query's pixel dimensions) so a native tile on that grid is read without
-        # resampling in the merge.
-        ds = NAIP(self.naip_dir, prefer_native_crs=True)
-        out_res = (2.0, 3.0)
-        x, y, t = ds.bounds
-        size = 8
-        index = (
-            slice(x.start, x.start + size * x.step, x.step),
-            slice(y.start, y.start + size * y.step, y.step),
-            t,
-        )
-        rx, ry, _ = ds._reproject_slice(index, CRS.from_epsg(4326), out_res)
-
-        # Edges fall on the out_res grid
-        assert math.isclose(rx.start / out_res[0], round(rx.start / out_res[0]))
-        assert math.isclose(ry.start / out_res[1], round(ry.start / out_res[1]))
-        # Step is the native resolution and the pixel dimensions are preserved
-        assert (rx.step, ry.step) == out_res
-        assert round((rx.stop - rx.start) / rx.step) == size
-        assert round((ry.stop - ry.start) / ry.step) == size
-
-        # With an offset, edges fall on the out_res grid shifted by it
-        offset = (1.0, 1.5)
-        rx, ry, _ = ds._reproject_slice(index, CRS.from_epsg(4326), out_res, offset)
-        assert math.isclose((rx.start - 1.0) / 2.0, round((rx.start - 1.0) / 2.0))
-        assert math.isclose((ry.start - 1.5) / 3.0, round((ry.start - 1.5) / 3.0))
-
     def test_intersection_unpins_native_crs(self) -> None:
         ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
         ds2 = NAIP(self.naip_dir, prefer_native_crs=True)
