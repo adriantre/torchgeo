@@ -661,18 +661,24 @@ class RasterDataset(GeoDataset):
         :attr:`_crs_registry` to ``None`` — the tests do this.)
 
         Returns:
-            The CRSs this dataset can emit, in first-appearance order.
+            The CRSs this dataset can emit: :attr:`crs` first, then the distinct native
+            CRSs sorted by WKT.
 
         .. versionadded:: 0.11
         """
-        if self._crs_registry is None:
-            if 'native_crs' not in self.index:
-                self._crs_registry = (self.crs,)
-            else:
-                self._crs_registry = tuple(
-                    dict.fromkeys([self.crs, *self.index['native_crs']])
-                )
-        return self._crs_registry
+        registry = self._crs_registry
+        if registry is None:
+            # Keep self.crs as first element, sort the rest such that
+            # index 0 means self.crs in every GeoDataset
+            crss = [self.crs]
+            if 'native_crs' in self.index:
+                natives = dict.fromkeys(self.index['native_crs'])
+                for crs in sorted(natives, key=lambda crs: crs.to_wkt()):
+                    if crs not in crss:
+                        crss.append(crs)
+            registry = tuple(crss)
+            self._crs_registry = registry
+        return registry
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.

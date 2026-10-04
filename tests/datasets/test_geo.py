@@ -478,7 +478,7 @@ class TestRasterDataset:
         """The registry aggregates the distinct native CRSs, deduped and ordered.
 
         A dataset spanning multiple CRS zones exposes each as a stable index (index
-        CRS first, then natives in first-appearance order), derived from the same
+        CRS first, then natives sorted by WKT), derived from the same
         ``native_crs`` column ``_select_out_crs`` reads, and identical after the
         process boundary so a native read resolves consistently across ranks/workers.
         """
@@ -496,6 +496,18 @@ class TestRasterDataset:
         assert len(reg) == 3  # deduped, no repeats
 
         assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
+        # File order does not affect the registry
+        ds.index['native_crs'] = ([b, a] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == reg
+
+        # Equal CRSs with different WKT collapse to one entry
+        b_gdal = CRS.from_wkt(b.to_wkt('WKT1_GDAL'))
+        assert b_gdal == b and b_gdal.to_wkt() != b.to_wkt()
+        ds.index['native_crs'] = [b, b_gdal]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == (index_crs, b)
 
     def test_crs_registry_without_native_crs_column(self) -> None:
         # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
