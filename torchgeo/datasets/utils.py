@@ -100,6 +100,22 @@ def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Tran
     return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
 
+@functools.lru_cache(maxsize=128)
+def _same_units(crs1: pyproj.CRS, crs2: pyproj.CRS) -> bool:
+    """Whether two CRSs measure their horizontal axes in the same unit.
+
+    Args:
+        crs1: First :term:`coordinate reference system (CRS)`.
+        crs2: Second :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        True if the first axis of both CRSs has the same unit.
+    """
+    factor1 = crs1.axis_info[0].unit_conversion_factor
+    factor2 = crs2.axis_info[0].unit_conversion_factor
+    return factor1 == factor2
+
+
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
 @dataclass(frozen=True)
 class BoundingBox:

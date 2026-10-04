@@ -519,7 +519,7 @@ class TestRasterDataset:
         # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
         # registry then holds only the index CRS and every sample resolves to it.
         ds = NAIP(self.naip_dir)
-        ds.index = ds.index.drop(columns=['native_crs', 'native_res'])
+        ds.index = ds.index.drop(columns=['native_crs'])
         assert ds.crs_registry == (ds.crs,)
         x = ds[ds.bounds]
         assert ds.crs_registry[int(x['crs_index'])] == ds.crs
@@ -531,16 +531,15 @@ class TestRasterDataset:
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
 
-    def test_native_crs_res_columns(self) -> None:
+    def test_native_crs_column(self) -> None:
         native = NAIP(self.naip_dir)
         # Without reprojection, the native CRS matches the index CRS
         assert (native.index['native_crs'] == native.crs).all()
 
-        # After reprojection, the index CRS changes but the native columns do not
+        # After reprojection, the index CRS changes but the native column does not
         reprojected = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
         assert reprojected.crs != native.crs
         assert (reprojected.index['native_crs'] == native.crs).all()
-        assert reprojected.index['native_res'].equals(native.index['native_res'])
 
     def test_prefer_native_crs_flag(self) -> None:
         assert NAIP(self.naip_dir)._prefer_native_crs is False
@@ -554,12 +553,15 @@ class TestRasterDataset:
         # Native CRS equals index CRS: no native read
         assert ds._select_out_crs(ds.index) == (ds.crs, None)
 
-        # All files share a single foreign native CRS: read in that CRS and res
+        # All files share a single foreign native CRS: read in that CRS at res
         foreign = ds.index.copy()
-        foreign['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
-        out_crs, out_res = ds._select_out_crs(foreign)
-        assert out_crs == CRS.from_epsg(4326)
-        assert out_res == ds.index['native_res'].iloc[0]
+        foreign['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(foreign) == (CRS.from_epsg(32618), ds.res)
+
+        # Foreign native CRS in other units: res can't apply, use the index CRS
+        degrees = ds.index.copy()
+        degrees['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(degrees) == (ds.crs, None)
 
         # Mixed native CRSs: fall back to the index CRS
         mixed = foreign.copy()
@@ -569,12 +571,10 @@ class TestRasterDataset:
         # Disabled when prefer_native_crs is False
         assert NAIP(self.naip_dir)._select_out_crs(foreign) == (ds.crs, None)
 
-    def test_prefer_native_crs_native_res(self) -> None:
-        ds = NAIP(self.naip_dir, prefer_native_crs=True)
-        # Simulate all files sharing a foreign native CRS and resolution
-        n = len(ds.index)
-        ds.index['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
-        ds.index['native_res'] = [(2.0, 3.0)] * n
+    def test_prefer_native_crs_res(self) -> None:
+        ds = NAIP(self.naip_dir, res=(2.0, 3.0), prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS
+        ds.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
         ds._crs_registry = None  # invalidate the cache after mutating the index
 
         x, y, t = ds.bounds
@@ -585,8 +585,8 @@ class TestRasterDataset:
             t,
         )
         sample = ds[query]
-        # Read in the native CRS at the native resolution (exact, no envelope)
-        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(4326)
+        # Read in the native CRS at res
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(32618)
         assert sample['bounds'][2].item() == 2.0
         assert sample['bounds'][5].item() == 3.0
         assert sample['image'].shape[-2:] == (size, size)

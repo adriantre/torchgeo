@@ -48,6 +48,7 @@ from .utils import (
     Path,
     Sample,
     _cached_transformer,
+    _same_units,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -183,21 +184,22 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         """Choose the CRS and resolution to read a query into.
 
         If :attr:`_prefer_native_crs` is set and every file matched by a query
-        shares a single native CRS that differs from the index CRS, that CRS and
-        its native resolution are returned so the data can be read without
-        warping. Otherwise the index CRS is returned with no resolution.
+        shares a single native CRS that differs from the index CRS, that CRS is
+        returned with :attr:`res`, so the data can be read without warping. As
+        :attr:`res` is in index CRS units, a native CRS with different units is
+        not used. Otherwise the index CRS is returned with no resolution.
 
         Args:
             df: The rows of :attr:`index` matched by a query.
 
         Returns:
-            A tuple of the CRS to read into and, when reading natively, the
-            native resolution in that CRS (else ``None``).
+            A tuple of the CRS to read into and, when reading natively,
+            :attr:`res` (else ``None``).
         """
         if self._prefer_native_crs and df['native_crs'].nunique() == 1:
             native = df['native_crs'].iloc[0]
-            if native != self.crs:
-                return native, df['native_res'].iloc[0]
+            if native != self.crs and _same_units(native, self.crs):
+                return native, self.res
         return self.crs, None
 
     def _reproject_slice(
@@ -544,9 +546,10 @@ class RasterDataset(GeoDataset):
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
-                native CRS are read in that CRS, at its native resolution,
-                without warping, instead of the index CRS. Ignored if *crs* is
-                specified. Samples may then be returned in different CRSs, which
+                native CRS are read in that CRS at *res*, without warping, instead
+                of the index CRS. A native CRS with different units than the
+                index CRS (e.g. degrees vs. meters) is not used. Ignored if *crs*
+                is specified. Samples may then be returned in different CRSs, which
                 is unsuitable for stitching gridded predictions back together.
 
         Raises:
@@ -578,7 +581,6 @@ class RasterDataset(GeoDataset):
         datetimes = []
         geometries = []
         native_crss = []
-        native_ress = []
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -600,14 +602,11 @@ class RasterDataset(GeoDataset):
                         # Normalize to a pyproj CRS once here so the per-query read
                         # path can compare/transform without reconverting.
                         native_crs = PROJ_CRS.from_user_input(src_crs)
-                    with rasterio.open(filepath) as src:
-                        native_res = src.res
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
                     geometries.append(footprint)
                     native_crss.append(native_crs)
-                    native_ress.append(native_res)
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -645,11 +644,7 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {
-            'filepath': filepaths,
-            'native_crs': native_crss,
-            'native_res': native_ress,
-        }
+        data = {'filepath': filepaths, 'native_crs': native_crss}
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 
