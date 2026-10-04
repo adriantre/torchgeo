@@ -211,7 +211,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         index: GeoSlice,
         out_crs: PROJ_CRS,
         out_res: tuple[float, float],
-        offset: tuple[float, float] = (0.0, 0.0),
+        offset: tuple[float, float],
     ) -> tuple[slice, slice, slice]:
         """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
 
@@ -558,8 +558,8 @@ class RasterDataset(GeoDataset):
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, queries whose files all share a single
-                native CRS are read in that CRS at *res*, without warping, instead
-                of the index CRS. A native CRS with different units than the
+                native CRS are read in that CRS at the dataset's resolution
+                (:attr:`res`), without warping, instead of the index CRS. A native CRS with different units than the
                 index CRS (e.g. degrees vs. meters) is not used. Ignored if *crs*
                 is specified. Samples may then be returned in different CRSs, which
                 is unsuitable for stitching gridded predictions back together.

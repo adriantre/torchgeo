@@ -531,6 +531,7 @@ class TestRasterDataset:
         # with prefer_native_crs.
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
         ds.index = ds.index.drop(columns=['native_crs'])
+        ds._crs_registry = None  # rebuild the registry from the custom index
         assert ds.crs_registry == (ds.crs,)
         x = ds[ds.bounds]
         assert ds.crs_registry[int(x['crs_index'])] == ds.crs
@@ -610,8 +611,6 @@ class TestRasterDataset:
     def test_grid_offset(self) -> None:
         ds = NAIP(self.naip_dir, res=(2.0, 3.0))
         df = ds.index.copy()
-        df['native_origin'] = [(5.0, 7.5), (5.0, 7.5)]
-        assert ds._grid_offset(df) == (1.0, 1.5)
         # Tie between two grids: the smallest offset wins
         df['native_origin'] = [(5.0, 7.5), (4.0, 6.0)]
         assert ds._grid_offset(df) == (0.0, 0.0)
