@@ -87,8 +87,9 @@ Sample: TypeAlias = dict[str, Tensor]  # noqa: UP040
 def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Transformer:
     """Cache CRS transformers, which are expensive to construct (~0.5 ms each).
 
-    Reads reproject the query into the data's native CRS on every sample, so the
-    handful of distinct ``(src, dst)`` pipelines are reused rather than rebuilt.
+    Reads may transform coordinates on every sample (e.g. native-CRS reads and vector
+    reprojection), so the handful of distinct ``(src, dst)`` pipelines are reused
+    rather than rebuilt.
 
     Args:
         src_crs: Source :term:`coordinate reference system (CRS)`.

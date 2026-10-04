@@ -482,12 +482,10 @@ class TestRasterDataset:
         assert x['crs_index'] == 0
 
     def test_crs_registry_multi_crs(self) -> None:
-        """The registry aggregates the distinct native CRSs, deduped and ordered.
+        """The registry holds the distinct native CRSs in a fixed order.
 
-        A dataset spanning multiple CRS zones exposes each as a stable index (index
-        CRS first, then natives sorted by WKT), derived from the same
-        ``native_crs`` column ``_select_out_crs`` reads, and identical after the
-        process boundary so a native read resolves consistently across ranks/workers.
+        The index CRS comes first, then the natives sorted by WKT, and the registry
+        survives pickling.
         """
         ds = NAIP(self.naip_dir)
         index_crs = ds.crs

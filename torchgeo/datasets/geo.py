@@ -363,7 +363,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         CRS travels as a tensor. The base dataset reads every query in :attr:`crs`, so
         the registry holds only that single CRS. Subclasses that read in multiple CRSs
         (e.g. :class:`RasterDataset` native-CRS reads) override this. Follows
-        :attr:`crs`, so changing it re-points earlier ``crs_index`` values.
+        :attr:`crs`, so a ``crs_index`` from before :attr:`crs` changed no longer
+        decodes correctly.
 
         Returns:
             The CRSs this dataset can emit, in index order.
@@ -694,8 +695,8 @@ class RasterDataset(GeoDataset):
         Returns:
             :attr:`crs` first, then the distinct native CRSs sorted by WKT.
         """
-        # Keep self.crs as first element, sort the rest such that
-        # index 0 means self.crs in every GeoDataset
+        # self.crs first, so index 0 means self.crs in every GeoDataset. The rest are
+        # sorted by WKT, so the order doesn't depend on file order.
         crss = [self.crs]
         if 'native_crs' in self.index:
             natives = dict.fromkeys(self.index['native_crs'])
