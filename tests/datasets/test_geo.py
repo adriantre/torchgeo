@@ -474,6 +474,12 @@ class TestRasterDataset:
         with pytest.raises(ValueError, match='UTM zone 31N is not in the crs_registry'):
             ds._crs_index(CRS.from_epsg(32631))
 
+        # Changing crs updates the registry
+        ds.crs = CRS.from_epsg(4087)
+        x = ds[ds.bounds]
+        assert ds.crs_registry[0] == ds.crs
+        assert x['crs_index'] == 0
+
     def test_crs_registry_multi_crs(self) -> None:
         """The registry aggregates the distinct native CRSs, deduped and ordered.
 

@@ -339,6 +339,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
         print(f'Converting {self.__class__.__name__} CRS from {self.crs} to {new_crs}')
         self.index.to_crs(new_crs, inplace=True)
+        # Invalidate the crs_registry cache to force re-computation with the new crs
+        self._crs_registry = None
 
     @property
     def crs_registry(self) -> tuple[PROJ_CRS, ...]:
