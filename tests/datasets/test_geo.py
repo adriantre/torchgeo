@@ -573,8 +573,9 @@ class TestRasterDataset:
 
     def test_prefer_native_crs_res(self) -> None:
         ds = NAIP(self.naip_dir, res=(2.0, 3.0), prefer_native_crs=True)
-        # Simulate all files sharing a foreign native CRS
+        # Simulate all files sharing a foreign native CRS, on a grid offset from 0
         ds.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        ds.index['native_origin'] = [(1.0, 1.5)] * len(ds.index)
         ds._crs_registry = None  # invalidate the cache after mutating the index
 
         x, y, t = ds.bounds
@@ -590,6 +591,19 @@ class TestRasterDataset:
         assert sample['bounds'][2].item() == 2.0
         assert sample['bounds'][5].item() == 3.0
         assert sample['image'].shape[-2:] == (size, size)
+        # The read window lies on the files' grid
+        xmin, ymin = sample['bounds'][0].item(), sample['bounds'][3].item()
+        assert math.isclose((xmin - 1.0) / 2.0, round((xmin - 1.0) / 2.0))
+        assert math.isclose((ymin - 1.5) / 3.0, round((ymin - 1.5) / 3.0))
+
+    def test_grid_offset(self) -> None:
+        ds = NAIP(self.naip_dir, res=(2.0, 3.0))
+        df = ds.index.copy()
+        df['native_origin'] = [(5.0, 7.5), (5.0, 7.5)]
+        assert ds._grid_offset(df) == (1.0, 1.5)
+        # Tie between two grids: the smallest offset wins
+        df['native_origin'] = [(5.0, 7.5), (4.0, 6.0)]
+        assert ds._grid_offset(df) == (0.0, 0.0)
 
     def test_reproject_slice_grid_aligned(self) -> None:
         # The reprojected read window must be snapped to the out_res grid (and keep the
@@ -613,6 +627,12 @@ class TestRasterDataset:
         assert (rx.step, ry.step) == out_res
         assert round((rx.stop - rx.start) / rx.step) == size
         assert round((ry.stop - ry.start) / ry.step) == size
+
+        # With an offset, edges fall on the out_res grid shifted by it
+        offset = (1.0, 1.5)
+        rx, ry, _ = ds._reproject_slice(index, CRS.from_epsg(4326), out_res, offset)
+        assert math.isclose((rx.start - 1.0) / 2.0, round((rx.start - 1.0) / 2.0))
+        assert math.isclose((ry.start - 1.5) / 3.0, round((ry.start - 1.5) / 3.0))
 
     def test_intersection_unpins_native_crs(self) -> None:
         ds1 = NAIP(self.naip_dir, prefer_native_crs=True)

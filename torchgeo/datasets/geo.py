@@ -203,20 +203,26 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         return self.crs, None
 
     def _reproject_slice(
-        self, index: GeoSlice, out_crs: PROJ_CRS, out_res: tuple[float, float]
+        self,
+        index: GeoSlice,
+        out_crs: PROJ_CRS,
+        out_res: tuple[float, float],
+        offset: tuple[float, float] = (0.0, 0.0),
     ) -> tuple[slice, slice, slice]:
         """Reproject a spatiotemporal slice from the index CRS into *out_crs*.
 
         The query center is reprojected (a point, so without the inflation a
         reprojected box would incur) and a box is rebuilt around it at *out_res*,
         preserving the pixel dimensions of the query. The box origin is snapped to the
-        *out_res* grid so that reads of data tiled on that grid are pixel-aligned and
-        are not resampled in the merge (the point of reading in the native CRS).
+        *out_res* grid shifted by *offset*, so that reads of data on that grid are
+        pixel-aligned and are not resampled in the merge (the point of reading in the
+        native CRS).
 
         Args:
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
             out_crs: :term:`coordinate reference system (CRS)` to reproject into.
             out_res: Resolution in units of *out_crs*.
+            offset: Offset of the data's pixel grid from multiples of *out_res*.
 
         Returns:
             The reprojected slice in *out_crs*.
@@ -227,10 +233,11 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         transformer = _cached_transformer(self.crs, out_crs)
         cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
         xres, yres = out_res
+        xoff, yoff = offset
         # Snap the lower-left corner to the out_res grid, then extend by the pixel
         # dimensions, so the box edges fall on grid lines shared with the data tiles.
-        left = (cx - width * xres / 2) // xres * xres
-        bottom = (cy - height * yres / 2) // yres * yres
+        left = (cx - width * xres / 2 - xoff) // xres * xres + xoff
+        bottom = (cy - height * yres / 2 - yoff) // yres * yres + yoff
         return (
             slice(left, left + width * xres, xres),
             slice(bottom, bottom + height * yres, yres),
@@ -581,12 +588,13 @@ class RasterDataset(GeoDataset):
         datetimes = []
         geometries = []
         native_crss = []
+        native_origins = []
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
                 vrt = None
                 try:
-                    vrt, src_crs, _ = self._load_warp_file_with_source(
+                    vrt, src_crs, src_transform = self._load_warp_file_with_source(
                         filepath=filepath, crs=crs
                     )
                     # See if file has a color map
@@ -607,6 +615,7 @@ class RasterDataset(GeoDataset):
                         footprint = shapely.box(*vrt.bounds)
                     geometries.append(footprint)
                     native_crss.append(native_crs)
+                    native_origins.append((src_transform.c, src_transform.f))
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -644,7 +653,11 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {'filepath': filepaths, 'native_crs': native_crss}
+        data = {
+            'filepath': filepaths,
+            'native_crs': native_crss,
+            'native_origin': native_origins,
+        }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 
@@ -679,6 +692,22 @@ class RasterDataset(GeoDataset):
             self._crs_registry = registry
         return registry
 
+    def _grid_offset(self, df: GeoDataFrame) -> tuple[float, float]:
+        """Offset of the files' pixel grid from multiples of :attr:`res`.
+
+        Files matched by one query may lie on different grids, so the most common
+        offset is used, with ties broken by the smallest offset.
+
+        Args:
+            df: The rows of :attr:`index` matched by a query.
+
+        Returns:
+            The x and y offset of the grid, in native CRS units.
+        """
+        xres, yres = self.res
+        offsets = [(x % xres, y % yres) for x, y in df['native_origin']]
+        return max(sorted(set(offsets)), key=offsets.count)
+
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
 
@@ -704,7 +733,8 @@ class RasterDataset(GeoDataset):
 
         out_crs, out_res = self._select_out_crs(df)
         if out_res is not None:
-            index = self._reproject_slice(index, out_crs, out_res)
+            offset = self._grid_offset(df)
+            index = self._reproject_slice(index, out_crs, out_res, offset)
             x, y, t = self._disambiguate_slice(index)
 
         if self.separate_files:
