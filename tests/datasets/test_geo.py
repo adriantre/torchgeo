@@ -35,6 +35,7 @@ from torchgeo.datasets import (
     UnionDataset,
     VectorDataset,
     XarrayDataset,
+    random_bbox_assignment,
 )
 from torchgeo.datasets.utils import GeoSlice, Sample
 
@@ -514,6 +515,17 @@ class TestRasterDataset:
         ds.index['native_crs'] = [b, b_gdal]  # ty: ignore[invalid-assignment]
         ds._crs_registry = None
         assert ds.crs_registry == (index_crs, b)
+
+    def test_crs_registry_shared_by_splits(self) -> None:
+        root = os.path.join('tests', 'data', 'raster')
+        paths = [
+            os.path.join(root, 'res_2-2_epsg_4087'),
+            os.path.join(root, 'res_4-4_epsg_4326'),
+        ]
+        ds = RasterDataset(paths)
+        splits = random_bbox_assignment(ds, [0.5, 0.5])
+        # Each split holds one of the two files, but decodes crs_index like ds
+        assert all(split.crs_registry == ds.crs_registry for split in splits)
 
     def test_crs_registry_without_native_crs_column(self) -> None:
         # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the

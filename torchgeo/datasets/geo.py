@@ -664,17 +664,17 @@ class RasterDataset(GeoDataset):
         }
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+        # Build before any split copies the dataset, so all splits share the registry
+        self._crs_registry = self._build_crs_registry()
 
     @property
     def crs_registry(self) -> tuple[PROJ_CRS, ...]:
         """Distinct CRSs a query may be read in: index CRS first, then per-file natives.
 
         Derived from the ``native_crs`` index column (the same source
-        :meth:`_select_out_crs` reads) and cached after first access, so per-read
-        ``crs_index`` stamping stays O(1) instead of rebuilding the registry each call.
-        Subclasses with a custom index that omits ``native_crs`` read only in
-        :attr:`crs`. (Mutating the index after first access requires resetting
-        :attr:`_crs_registry` to ``None`` — the tests do this.)
+        :meth:`_select_out_crs` reads). Built in ``__init__``, so splits of a dataset
+        share it, and rebuilt when :attr:`crs` changes. Subclasses with a custom index
+        that omits ``native_crs`` read only in :attr:`crs`.
 
         Returns:
             The CRSs this dataset can emit: :attr:`crs` first, then the distinct native
@@ -684,17 +684,25 @@ class RasterDataset(GeoDataset):
         """
         registry = self._crs_registry
         if registry is None:
-            # Keep self.crs as first element, sort the rest such that
-            # index 0 means self.crs in every GeoDataset
-            crss = [self.crs]
-            if 'native_crs' in self.index:
-                natives = dict.fromkeys(self.index['native_crs'])
-                for crs in sorted(natives, key=lambda crs: crs.to_wkt()):
-                    if crs not in crss:
-                        crss.append(crs)
-            registry = tuple(crss)
+            registry = self._build_crs_registry()
             self._crs_registry = registry
         return registry
+
+    def _build_crs_registry(self) -> tuple[PROJ_CRS, ...]:
+        """Build :attr:`crs_registry` from :attr:`crs` and the ``native_crs`` column.
+
+        Returns:
+            :attr:`crs` first, then the distinct native CRSs sorted by WKT.
+        """
+        # Keep self.crs as first element, sort the rest such that
+        # index 0 means self.crs in every GeoDataset
+        crss = [self.crs]
+        if 'native_crs' in self.index:
+            natives = dict.fromkeys(self.index['native_crs'])
+            for crs in sorted(natives, key=lambda crs: crs.to_wkt()):
+                if crs not in crss:
+                    crss.append(crs)
+        return tuple(crss)
 
     def _grid_offset(self, df: GeoDataFrame) -> tuple[float, float]:
         """Offset of the files' pixel grid from multiples of :attr:`res`.
