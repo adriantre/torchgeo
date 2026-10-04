@@ -14,10 +14,9 @@ import pandas as pd
 import pytest
 import rasterio
 import torch
-from affine import Affine
 from numpy.typing import NDArray
 from pytest import MonkeyPatch
-from rasterio import MemoryFile
+from rasterio import Affine, MemoryFile
 from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from shapely import MultiPolygon, Polygon, box
@@ -507,7 +506,10 @@ class TestCollateFunctionsMatchingKeys:
     @pytest.fixture(scope='class')
     @classmethod
     def samples(cls) -> list[Sample]:
-        return [{'image': torch.tensor([1, 2, 0])}, {'image': torch.tensor([0, 0, 3])}]
+        return [
+            {'image': torch.tensor([1, 2, 0]), 'crs_index': torch.tensor(0)},
+            {'image': torch.tensor([0, 0, 3]), 'crs_index': torch.tensor(1)},
+        ]
 
     def test_stack_unbind_samples(self, samples: list[Sample]) -> None:
         sample = stack_samples(samples)
@@ -522,11 +524,13 @@ class TestCollateFunctionsMatchingKeys:
         sample = concat_samples(samples)
         assert sample['image'].size() == torch.Size([6])
         assert torch.allclose(sample['image'], torch.tensor([1, 2, 0, 0, 0, 3]))
+        assert 'crs_index' not in sample
 
     def test_merge_samples(self, samples: list[Sample]) -> None:
         sample = merge_samples(samples)
         assert sample['image'].size() == torch.Size([3])
         assert torch.allclose(sample['image'], torch.tensor([1, 2, 3]))
+        assert 'crs_index' not in sample
 
 
 class TestCollateFunctionsDifferingKeys:
