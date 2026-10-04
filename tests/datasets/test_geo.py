@@ -35,6 +35,7 @@ from torchgeo.datasets import (
     UnionDataset,
     VectorDataset,
     XarrayDataset,
+    random_bbox_assignment,
 )
 from torchgeo.datasets.utils import GeoSlice, Sample
 
@@ -474,12 +475,148 @@ class TestRasterDataset:
         with pytest.raises(ValueError, match='UTM zone 31N is not in the crs_registry'):
             ds._crs_index(CRS.from_epsg(32631))
 
+        # Changing crs updates the registry
+        ds.crs = CRS.from_epsg(4087)
+        x = ds[ds.bounds]
+        assert ds.crs_registry[0] == ds.crs
+        assert x['crs_index'] == 0
+
+    def test_crs_registry_multi_crs(self) -> None:
+        """The registry holds the distinct native CRSs in a fixed order.
+
+        The index CRS comes first, then the natives sorted by WKT, and the registry
+        survives pickling.
+        """
+        ds = NAIP(self.naip_dir)
+        index_crs = ds.crs
+        a, b = CRS.from_epsg(4326), CRS.from_epsg(32631)
+        # Simulate files spanning two foreign zones, with a repeat to exercise dedup
+        n = len(ds.index)
+        ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        reg = ds.crs_registry
+        assert reg[0] == index_crs  # index CRS is always index 0
+        assert set(reg) == {index_crs, a, b}
+        assert len(reg) == 3  # deduped, no repeats
+
+        assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
+        # File order does not affect the registry
+        ds.index['native_crs'] = ([b, a] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == reg
+
+        # Equal CRSs with different WKT collapse to one entry
+        b_gdal = CRS.from_wkt(b.to_wkt('WKT1_GDAL'))
+        assert b_gdal == b and b_gdal.to_wkt() != b.to_wkt()
+        ds.index['native_crs'] = [b, b_gdal]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == (index_crs, b)
+
+    def test_crs_registry_shared_by_splits(self) -> None:
+        root = os.path.join('tests', 'data', 'raster')
+        paths = [
+            os.path.join(root, 'res_2-2_epsg_4087'),
+            os.path.join(root, 'res_4-4_epsg_4326'),
+        ]
+        ds = RasterDataset(paths, prefer_native_crs=True)
+        splits = random_bbox_assignment(ds, [0.5, 0.5])
+        # Each split holds one of the two files, but decodes crs_index like ds
+        assert all(split.crs_registry == ds.crs_registry for split in splits)
+
+    def test_crs_registry_without_native_crs_column(self) -> None:
+        # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
+        # registry then holds only the index CRS and every sample is read in it, even
+        # with prefer_native_crs.
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds.index = ds.index.drop(columns=['native_crs'])
+        ds._crs_registry = None  # rebuild the registry from the custom index
+        assert ds.crs_registry == (ds.crs,)
+        x = ds[ds.bounds]
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
+
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
         naip2 = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
         assert naip1.crs != naip2.crs
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
+
+    def test_native_crs_column(self) -> None:
+        native = NAIP(self.naip_dir, prefer_native_crs=True)
+        assert (native.index['native_crs'] == native.crs).all()
+        # Without native reads, the index has no native columns
+        assert 'native_crs' not in NAIP(self.naip_dir).index
+
+    def test_prefer_native_crs_flag(self) -> None:
+        assert NAIP(self.naip_dir)._prefer_native_crs is False
+        assert NAIP(self.naip_dir, prefer_native_crs=True)._prefer_native_crs is True
+        # An explicit CRS pins the output CRS, disabling native preference
+        pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+
+    def test_select_out_crs(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Native CRS equals index CRS: no native read
+        assert ds._select_out_crs(ds.index) == (ds.crs, None)
+
+        # All files share a single foreign native CRS: read in that CRS at res
+        foreign = ds.index.copy()
+        foreign['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(foreign) == (CRS.from_epsg(32618), ds.res)
+
+        # Foreign native CRS in other units: res can't apply, use the index CRS
+        degrees = ds.index.copy()
+        degrees['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(degrees) == (ds.crs, None)
+
+        # Mixed native CRSs: fall back to the index CRS
+        mixed = foreign.copy()
+        mixed.iloc[0, mixed.columns.get_loc('native_crs')] = ds.crs  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(mixed) == (ds.crs, None)
+
+        # Disabled when prefer_native_crs is False
+        assert NAIP(self.naip_dir)._select_out_crs(foreign) == (ds.crs, None)
+
+    def test_prefer_native_crs_res(self) -> None:
+        ds = NAIP(self.naip_dir, res=(2.0, 3.0), prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS, on a grid offset from 0
+        ds.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        ds.index['native_origin'] = [(1.0, 1.5)] * len(ds.index)
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        x, y, t = ds.bounds
+        size = 8
+        query = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        sample = ds[query]
+        # Read in the native CRS at res
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(32618)
+        assert sample['bounds'][2].item() == 2.0
+        assert sample['bounds'][5].item() == 3.0
+        assert sample['image'].shape[-2:] == (size, size)
+        # The read window lies on the files' grid
+        xmin, ymin = sample['bounds'][0].item(), sample['bounds'][3].item()
+        assert math.isclose((xmin - 1.0) / 2.0, round((xmin - 1.0) / 2.0))
+        assert math.isclose((ymin - 1.5) / 3.0, round((ymin - 1.5) / 3.0))
+
+    def test_grid_offset(self) -> None:
+        ds = NAIP(self.naip_dir, res=(2.0, 3.0))
+        df = ds.index.copy()
+        # Tie between two grids: the smallest offset wins
+        df['native_origin'] = [(5.0, 7.5), (4.0, 6.0)]
+        assert ds._grid_offset(df) == (0.0, 0.0)
+
+    def test_intersection_unpins_native_crs(self) -> None:
+        ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds2 = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds1 & ds2
+        assert ds1._prefer_native_crs is False
+        assert ds2._prefer_native_crs is False
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)

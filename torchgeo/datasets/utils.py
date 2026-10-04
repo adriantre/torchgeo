@@ -9,6 +9,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
+import functools
 import glob
 import hashlib
 import importlib
@@ -28,6 +29,7 @@ from typing import Any, TypeAlias, cast, overload
 import numpy as np
 import pandas as pd
 import pyogrio
+import pyproj
 import rasterio
 import shapely.affinity
 import torch
@@ -79,6 +81,40 @@ Path: TypeAlias = str | os.PathLike[str]  # noqa: UP040
 #:
 #: Values are of type torch.Tensor.
 Sample: TypeAlias = dict[str, Tensor]  # noqa: UP040
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Transformer:
+    """Cache CRS transformers, which are expensive to construct (~0.5 ms each).
+
+    Reads may transform coordinates on every sample (e.g. native-CRS reads and vector
+    reprojection), so the handful of distinct ``(src, dst)`` pipelines are reused
+    rather than rebuilt.
+
+    Args:
+        src_crs: Source :term:`coordinate reference system (CRS)`.
+        dst_crs: Destination :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        A transformer from *src_crs* to *dst_crs*.
+    """
+    return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+
+@functools.lru_cache(maxsize=128)
+def _same_units(crs1: pyproj.CRS, crs2: pyproj.CRS) -> bool:
+    """Whether two CRSs measure their horizontal axes in the same unit.
+
+    Args:
+        crs1: First :term:`coordinate reference system (CRS)`.
+        crs2: Second :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        True if the first axis of both CRSs has the same unit.
+    """
+    factor1 = crs1.axis_info[0].unit_conversion_factor
+    factor2 = crs2.axis_info[0].unit_conversion_factor
+    return factor1 == factor2
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
