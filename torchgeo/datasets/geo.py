@@ -584,7 +584,9 @@ class RasterDataset(GeoDataset):
             if match is not None:
                 vrt = None
                 try:
-                    vrt = self._load_warp_file(filepath=filepath, crs=crs)
+                    vrt, src_crs, _ = self._load_warp_file_with_source(
+                        filepath=filepath, crs=crs
+                    )
                     # See if file has a color map
                     if self.cmap is None:
                         try:
@@ -592,13 +594,13 @@ class RasterDataset(GeoDataset):
                             self.cmap = ListedColormap(colors)
                         except ValueError:
                             pass
-                    if crs is None:
-                        with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
+                    with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
+                        if crs is None:
                             crs = PROJ_CRS.from_user_input(vrt.crs)
-                    with rasterio.open(filepath) as src:
                         # Normalize to a pyproj CRS once here so the per-query read
-                        # path can compare/transform without reconverting (~54 us each).
-                        native_crs = PROJ_CRS.from_user_input(src.crs or src.gcps[1])
+                        # path can compare/transform without reconverting.
+                        native_crs = PROJ_CRS.from_user_input(src_crs)
+                    with rasterio.open(filepath) as src:
                         native_res = src.res
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
@@ -870,6 +872,24 @@ class RasterDataset(GeoDataset):
         Raises:
             ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
         """
+        return self._load_warp_file_with_source(filepath, crs)[0]
+
+    def _load_warp_file_with_source(
+        self, filepath: Path, crs: PROJ_CRS | None = None
+    ) -> tuple[DatasetReader | WarpedVRT, RIO_CRS, Affine]:
+        """Load and warp a file, also returning the source georeferencing.
+
+        Args:
+            filepath: file to load and warp
+            crs: Optionally specify which CRS to reproject to.
+
+        Returns:
+            file handle of warped VRT, and the source CRS and transform (derived
+            from GCPs if the file has no meaningful affine transform)
+
+        Raises:
+            ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
+        """
         src = rasterio.open(filepath)
 
         has_meaningful_affine = (
@@ -911,8 +931,8 @@ class RasterDataset(GeoDataset):
                 **override,
             )
             src.close()
-            return vrt
-        return src
+            return vrt, src_crs, src_transform
+        return src, src_crs, src_transform
 
     def _compute_affine_georeferencing(
         self, src: DatasetReader | WarpedVRT
