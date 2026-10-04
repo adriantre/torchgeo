@@ -517,8 +517,9 @@ class TestRasterDataset:
 
     def test_crs_registry_without_native_crs_column(self) -> None:
         # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
-        # registry then holds only the index CRS and every sample resolves to it.
-        ds = NAIP(self.naip_dir)
+        # registry then holds only the index CRS and every sample is read in it, even
+        # with prefer_native_crs.
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
         ds.index = ds.index.drop(columns=['native_crs'])
         assert ds.crs_registry == (ds.crs,)
         x = ds[ds.bounds]

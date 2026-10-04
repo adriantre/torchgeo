@@ -196,7 +196,11 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             A tuple of the CRS to read into and, when reading natively,
             :attr:`res` (else ``None``).
         """
-        if self._prefer_native_crs and df['native_crs'].nunique() == 1:
+        if (
+            self._prefer_native_crs
+            and 'native_crs' in df
+            and df['native_crs'].nunique() == 1
+        ):
             native = df['native_crs'].iloc[0]
             if native != self.crs and _same_units(native, self.crs):
                 return native, self.res
@@ -563,7 +567,7 @@ class RasterDataset(GeoDataset):
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
 
-        .. versionadded:: 0.10
+        .. versionadded:: 0.11
            The *prefer_native_crs* parameter.
 
         .. versionadded:: 0.9
