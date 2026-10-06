@@ -227,6 +227,25 @@ def _reproject_slice(
     )
 
 
+def _merge_crs_registries(
+    registries: Iterable[Sequence[pyproj.CRS]],
+) -> tuple[pyproj.CRS, ...]:
+    """Merge the registries of a combiner's children, in the order they list them.
+
+    Args:
+        registries: The ``crs_registry`` of each child, the first child's first.
+
+    Returns:
+        The distinct CRSs of all registries, the first child's registry first.
+    """
+    crss: list[pyproj.CRS] = []
+    for registry in registries:
+        for crs in registry:
+            if crs not in crss:
+                crss.append(crs)
+    return tuple(crss)
+
+
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
 @dataclass(frozen=True)
 class BoundingBox:

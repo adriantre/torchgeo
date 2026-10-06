@@ -49,6 +49,7 @@ from .utils import (
     Sample,
     _cached_transformer,
     _grid_offset,
+    _merge_crs_registries,
     _reproject_slice,
     _same_units,
     _share_equal_crss,
@@ -272,6 +273,24 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
         return df
 
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None, tuple[float, float]]:
+        """Resolve the grid to read a query into.
+
+        Used by :class:`IntersectionDataset` and :class:`UnionDataset`.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The CRS, resolution and pixel grid offset, as from :meth:`_select_grid`.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        return self._select_grid(self._query_index(index))
+
     def _grid_key(
         self,
         index: GeoSlice,
@@ -292,6 +311,39 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         """
         x, y, t = self._disambiguate_slice(index)
         return (x, y, t, out_crs, out_res, offset)
+
+    def _child_keys(
+        self, index: GeoSlice, datasets: Sequence['GeoDataset']
+    ) -> tuple[list[GeoSlice], PROJ_CRS]:
+        """Build the key a combiner reads each child with, and the children's CRS.
+
+        A grid spec from an enclosing combiner is kept. Otherwise, if a child reads
+        natively, the grid comes from :meth:`_resolve_out_crs`. Only children that read
+        natively or must reproject get the grid spec.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
+            datasets: The children of the combiner.
+
+        Returns:
+            The key to read each child with, and the CRS the children are read in.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        index, out_crs, out_res, offset = _split_grid(index)
+        if out_crs is None:
+            if not self._prefer_native_crs:
+                return [index] * len(datasets), self.crs
+            out_crs, out_res, offset = self._resolve_out_crs(index)
+        key = self._grid_key(
+            index, out_crs, out_res or self.res, cast(tuple[float, float], offset)
+        )
+        foreign = out_crs != self.crs
+        keys = [key if foreign or ds._prefer_native_crs else index for ds in datasets]
+        return keys, out_crs
 
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
@@ -1780,9 +1832,10 @@ class IntersectionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
-        # Children must share a grid so samples can be combined
-        dataset1._prefer_native_crs = False
-        dataset2._prefer_native_crs = False
+        # Children share a grid chosen per query only if a child reads natively
+        self._prefer_native_crs = (
+            dataset1._prefer_native_crs or dataset2._prefer_native_crs
+        )
 
         # Spatial intersection
         index1 = dataset1.index.reset_index()
@@ -1823,11 +1876,46 @@ class IntersectionDataset(GeoDataset):
                 msg += ' if you want to ignore temporal intersection'
                 raise RuntimeError(msg)
 
-    def __getitem__(self, index: GeoSlice) -> Sample:
-        """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None, tuple[float, float]]:
+        """Resolve the shared read grid from the left-most child.
+
+        Override to anchor on another child, e.g. the one with the finest resolution.
 
         Args:
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The CRS, (optional) resolution and pixel grid offset to read every child
+            into.
+        """
+        return self.datasets[0]._resolve_out_crs(index)
+
+    @property
+    def crs_registry(self) -> tuple[PROJ_CRS, ...]:
+        """Union of the children's registries, in the order the children list them.
+
+        The first child's registry comes first, so index 0 is :attr:`crs`.
+
+        Returns:
+            The CRSs this combined dataset can emit, in index order.
+
+        .. versionadded:: 0.11
+        """
+        registry = self._crs_registry
+        if registry is None:
+            registry = _merge_crs_registries(ds.crs_registry for ds in self.datasets)
+            self._crs_registry = registry
+        return registry
+
+    def __getitem__(self, index: GeoSlice) -> Sample:
+        """Retrieve and combine a sample, reading all children onto one grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             Sample of input, target, and/or metadata at that index.
@@ -1835,14 +1923,16 @@ class IntersectionDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        # All datasets are guaranteed to have a valid index
-        samples = [ds[index] for ds in self.datasets]
+        keys, out_crs = self._child_keys(index, self.datasets)
+        # Read every child through the public __getitem__ so subclass overrides
+        # (e.g. mask remapping) are honored
+        samples = [ds[key] for ds, key in zip(self.datasets, keys)]
 
         # A child's crs_index points into its own registry, so replace it
         for s in samples:
             s.pop('crs_index', None)
         sample = self.collate_fn(samples)
-        sample['crs_index'] = self._crs_index(self.crs)
+        sample['crs_index'] = self._grid_crs_index(out_crs)
 
         if self.transforms is not None:
             sample = self.transforms(sample)
@@ -1880,6 +1970,8 @@ class IntersectionDataset(GeoDataset):
         self.index.to_crs(new_crs, inplace=True)
         self.datasets[0].crs = new_crs
         self.datasets[1].crs = new_crs
+        # The children's registries follow their new crs, so rebuild the merged one
+        self._crs_registry = None
 
     @property
     def res(self) -> tuple[float, float]:
@@ -1958,17 +2050,63 @@ class UnionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
-        # Children must share a grid so samples can be combined
-        dataset1._prefer_native_crs = False
-        dataset2._prefer_native_crs = False
+        # Children share a grid chosen per query only if a child reads natively
+        self._prefer_native_crs = (
+            dataset1._prefer_native_crs or dataset2._prefer_native_crs
+        )
 
         self.index = pd.concat([dataset1.index, dataset2.index])
 
-    def __getitem__(self, index: GeoSlice) -> Sample:
-        """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
+    def _resolve_out_crs(
+        self, index: GeoSlice
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None, tuple[float, float]]:
+        """Resolve the shared read grid from the first child with data.
+
+        Override to anchor on another child, e.g. the one with the finest resolution.
 
         Args:
             index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The CRS, (optional) resolution and pixel grid offset to read every child
+            into.
+
+        Raises:
+            IndexError: If *index* is not found in any dataset.
+        """
+        for ds in self.datasets:
+            try:
+                return ds._resolve_out_crs(index)
+            except IndexError:
+                continue
+        raise IndexError(
+            f'index: {index} not found in dataset with bounds: {self.bounds}'
+        )
+
+    @property
+    def crs_registry(self) -> tuple[PROJ_CRS, ...]:
+        """Union of the children's registries, in the order the children list them.
+
+        The first child's registry comes first, so index 0 is :attr:`crs`.
+
+        Returns:
+            The CRSs this combined dataset can emit, in index order.
+
+        .. versionadded:: 0.11
+        """
+        registry = self._crs_registry
+        if registry is None:
+            registry = _merge_crs_registries(ds.crs_registry for ds in self.datasets)
+            self._crs_registry = registry
+        return registry
+
+    def __getitem__(self, index: GeoSlice) -> Sample:
+        """Retrieve and merge a sample, reading all children onto one grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             Sample of input, target, and/or metadata at that index.
@@ -1976,11 +2114,13 @@ class UnionDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        # Not all datasets are guaranteed to have a valid index
+        keys, out_crs = self._child_keys(index, self.datasets)
+        # Not all datasets are guaranteed to have a valid index. Read every child
+        # through the public __getitem__ so subclass overrides are honored.
         samples = []
-        for ds in self.datasets:
+        for ds, key in zip(self.datasets, keys):
             try:
-                samples.append(ds[index])
+                samples.append(ds[key])
             except IndexError:
                 pass
 
@@ -1993,7 +2133,7 @@ class UnionDataset(GeoDataset):
         for s in samples:
             s.pop('crs_index', None)
         sample = self.collate_fn(samples)
-        sample['crs_index'] = self._crs_index(self.crs)
+        sample['crs_index'] = self._grid_crs_index(out_crs)
 
         if self.transforms is not None:
             sample = self.transforms(sample)
@@ -2031,6 +2171,8 @@ class UnionDataset(GeoDataset):
         self.index.to_crs(new_crs, inplace=True)
         self.datasets[0].crs = new_crs
         self.datasets[1].crs = new_crs
+        # The children's registries follow their new crs, so rebuild the merged one
+        self._crs_registry = None
 
     @property
     def res(self) -> tuple[float, float]:

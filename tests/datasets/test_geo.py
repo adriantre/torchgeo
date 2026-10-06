@@ -37,7 +37,7 @@ from torchgeo.datasets import (
     XarrayDataset,
     random_bbox_assignment,
 )
-from torchgeo.datasets.utils import GeoSlice, Sample, _share_equal_crss
+from torchgeo.datasets.utils import GeoSlice, Sample, _share_equal_crss, _split_grid
 
 MINT = pd.Timestamp(2025, 4, 24)
 MAXT = pd.Timestamp(2025, 4, 25)
@@ -107,6 +107,22 @@ class CustomVectorParquetDataset(VectorDataset):
 class CustomSentinelDataset(Sentinel2):
     all_bands: tuple[str, ...] = ()
     separate_files = False
+
+
+class RemapMaskNAIP(NAIP):
+    """A mask dataset that remaps its values in a ``__getitem__`` override.
+
+    Mirrors real mask datasets (e.g. CDL, NLCD, L7IrishMask) that post-process the
+    sample returned by ``super().__getitem__``. Used to prove the remap still runs
+    when this dataset is a *non-anchor* combiner child warped onto a foreign grid.
+    """
+
+    is_image = False
+
+    def __getitem__(self, index: GeoSlice) -> Sample:
+        sample = super().__getitem__(index)
+        sample['mask'] = torch.full_like(sample['mask'], 7)
+        return sample
 
 
 class CustomNonGeoDataset(NonGeoDataset):
@@ -200,6 +216,18 @@ class TestGeoDataset:
         dataset = ds1 | ds2 | ds3 | ds4
         assert isinstance(dataset, UnionDataset)
         assert len(dataset) == 4
+
+    def test_or_nested_disjoint(self) -> None:
+        # A nested union whose inner datasets have no data at the query is skipped
+        ds1 = CustomGeoDataset()
+        ds2 = CustomGeoDataset()
+        ds3 = CustomGeoDataset(bounds=[(10, 11, 12, 13, MINT, MAXT)])
+        # A native child makes the unions resolve a shared grid per query
+        ds1._prefer_native_crs = True
+        dataset = (ds1 | ds2) | ds3
+        index = (slice(10, 11, 1), slice(12, 13, 1), slice(MINT, MAXT, 1))
+        sample = dataset[index]
+        assert isinstance(sample['bounds'], Tensor)
 
     def test_str(self, dataset: GeoDataset) -> None:
         out = str(dataset)
@@ -643,6 +671,95 @@ class TestRasterDataset:
         xmin, ymin = sample['bounds'][0].item(), sample['bounds'][3].item()
         assert math.isclose((xmin - 1.0) / 2.0, round((xmin - 1.0) / 2.0))
         assert math.isclose((ymin - 1.5) / 3.0, round((ymin - 1.5) / 3.0))
+
+    def test_combine_reads_anchor_native_crs(self) -> None:
+        # Combined datasets read every child onto the left-most (anchor) child's
+        # native grid. Simulate the anchor having a foreign native CRS.
+        size = 8
+
+        def query(ds: GeoDataset) -> GeoSlice:
+            # Centered, so the box stays inside each child's footprint (the
+            # combined bounds can differ from a child's by sub-pixel amounts)
+            x, y, t = ds.bounds
+            cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
+            return (
+                slice(cx, cx + size * x.step, x.step),
+                slice(cy, cy + size * y.step, y.step),
+                t,
+            )
+
+        for combine in (NAIP.__and__, NAIP.__or__):
+            ds1 = NAIP(self.naip_dir, prefer_native_crs=True)
+            ds2 = NAIP(self.naip_dir)
+            combined = combine(ds1, ds2)
+            ds1.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+            ds1.index['native_origin'] = [(0.25, 0.5)] * len(ds1.index)
+            ds1._crs_registry = None  # rebuild the registry from the mutated index
+
+            # Children's registries are merged, without repeating the shared index CRS
+            assert combined.crs_registry == (ds1.crs, CRS.from_epsg(32618))
+            # The merged registry is cached, and cleared when crs changes
+            assert combined.crs_registry is combined.crs_registry
+            sample = combined[query(combined)]
+            assert combined.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(
+                32618
+            )
+            assert sample['image'].shape[-2:] == (size, size)
+            # Every child is read on the anchor's pixel grid
+            xres, yres = ds1.res
+            bounds = sample['bounds'].reshape(-1, 9)
+            xsteps = (bounds[:, 0] - 0.25 % xres) / xres
+            ysteps = (bounds[:, 3] - 0.5 % yres) / yres
+            assert torch.allclose(xsteps, xsteps.round(), rtol=0, atol=1e-6)
+            assert torch.allclose(ysteps, ysteps.round(), rtol=0, atol=1e-6)
+
+            # A native child that isn't the anchor is read onto the anchor's grid,
+            # even when that grid is the index CRS
+            reverse = combine(ds2, ds1)
+            # Only the native child gets the grid spec, the other the plain index
+            keys, _ = reverse._child_keys(query(reverse), reverse.datasets)
+            assert [_split_grid(key)[1] for key in keys] == [None, reverse.crs]
+            sample = reverse[query(reverse)]
+            assert reverse.crs_registry[int(sample['crs_index'])] == ds2.crs
+            bounds = sample['bounds'].reshape(-1, 9)
+            assert torch.equal(bounds, bounds[:1].expand_as(bounds))
+
+            # A nested combiner reads onto the outer anchor's grid too
+            nested = combine(ds1, NAIP(self.naip_dir) | NAIP(self.naip_dir))
+            sample = nested[query(nested)]
+            assert nested.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(32618)
+
+            combined.crs = CRS.from_epsg(3857)
+            assert combined._crs_registry is None
+            assert combined.crs_registry[0] == CRS.from_epsg(3857)
+
+    def test_combine_nonanchor_override_runs_when_warped(self) -> None:
+        # A mask dataset that remaps values in a __getitem__ override must still run
+        # that override when it is the *non-anchor* child warped onto the anchor's
+        # foreign native grid. The grid spec rides through the public __getitem__, so
+        # the override (which calls super().__getitem__) sees it for free.
+        size = 8
+        anchor = NAIP(self.naip_dir, prefer_native_crs=True)
+        mask = RemapMaskNAIP(self.naip_dir)
+        anchor.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        anchor._crs_registry = None  # rebuild the registry from the mutated index
+
+        # Mask is the right operand, so anchor (index 0) sets the shared grid and the
+        # mask child is warped onto the anchor's foreign native CRS.
+        combined = anchor & mask
+        x, y, t = combined.bounds
+        cx, cy = (x.start + x.stop) / 2, (y.start + y.stop) / 2
+        query = (
+            slice(cx, cx + size * x.step, x.step),
+            slice(cy, cy + size * y.step, y.step),
+            t,
+        )
+        sample = combined[query]
+
+        # Warped onto the anchor's foreign native CRS ...
+        assert combined.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(32618)
+        # ... and the non-anchor mask's remap still ran on that warped read.
+        assert (sample['mask'] == 7).all()
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)
