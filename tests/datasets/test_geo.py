@@ -128,6 +128,24 @@ class TestGeoDataset:
         assert isinstance(sample, dict)
         assert isinstance(sample['bounds'], Tensor)
 
+    def test_getitem_foreign_crs(self, dataset: GeoDataset) -> None:
+        index = (slice(0, 1, 1), slice(2, 3, 1), slice(MINT, MAXT, 1))
+        # Reading into its own CRS works
+        own = dataset._grid_key(index, dataset.crs, (1.0, 1.0), (0.0, 0.0))
+        assert isinstance(dataset[own], dict)
+        # A dataset that reads only in its index CRS refuses another CRS loudly,
+        # rather than silently misaligning when combined onto another grid
+        with pytest.raises(NotImplementedError, match='non-index CRS'):
+            dataset[
+                dataset._grid_key(index, CRS.from_epsg(4326), (1.0, 1.0), (0.0, 0.0))
+            ]
+        # Without data at the query it reports that instead, so a union skips it
+        outside = (slice(10, 11, 1), slice(12, 13, 1), slice(MINT, MAXT, 1))
+        with pytest.raises(IndexError):
+            dataset[
+                dataset._grid_key(outside, CRS.from_epsg(4326), (1.0, 1.0), (0.0, 0.0))
+            ]
+
     def test_len(self, dataset: GeoDataset) -> None:
         assert len(dataset) == 1
 

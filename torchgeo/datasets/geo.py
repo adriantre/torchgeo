@@ -134,12 +134,30 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     def _disambiguate_slice(self, index: GeoSlice) -> tuple[slice, slice, slice]:
         """Disambiguate a partial spatiotemporal slice.
 
+        A trailing ``(out_crs, out_res, offset)`` grid spec is removed if it is in
+        :attr:`crs`, and refused otherwise.
+
         Args:
-            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             A fully resolved spatiotemporal slice.
+
+        Raises:
+            IndexError: If asked to read into a non-index CRS where *index* is not
+                found in the dataset.
+            NotImplementedError: If asked to read into a non-index CRS.
         """
+        index, out_crs, _, _ = _split_grid(index)
+        if out_crs is not None and out_crs != self.crs:
+            # Without data at the query, a UnionDataset skips this dataset
+            self._query_index(index)
+            raise NotImplementedError(
+                f'{type(self).__name__} cannot read into a non-index CRS.'
+            )
+
         out = list(self.bounds)
 
         if isinstance(index, slice):
@@ -289,6 +307,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
         Raises:
             IndexError: If *index* is not found in the dataset.
+            NotImplementedError: If asked to read into a CRS this dataset cannot honor.
         """
 
     def __and__(self, other: 'GeoDataset') -> 'IntersectionDataset':
