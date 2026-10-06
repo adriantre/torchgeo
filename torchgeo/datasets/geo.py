@@ -175,6 +175,31 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         ]
         return torch.tensor(bounds)
 
+    def _query_index(self, index: GeoSlice) -> GeoDataFrame:
+        """Find the files in :attr:`index` matched by a query.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+
+        Returns:
+            The matched rows of :attr:`index`, in the index CRS.
+
+        Raises:
+            IndexError: If *index* is not found in the dataset.
+        """
+        x, y, t = self._disambiguate_slice(index)
+        interval = pd.Interval(t.start, t.stop)
+        df = self.index.iloc[self.index.index.overlaps(interval)]
+        df = df.iloc[:: t.step]
+        df = df.cx[x.start : x.stop, y.start : y.stop]
+
+        if df.empty:
+            raise IndexError(
+                f'index: {index} not found in dataset with bounds: {self.bounds}'
+            )
+
+        return df
+
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
@@ -574,18 +599,10 @@ class RasterDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
-            )
+        df = self._query_index(index)
 
         out_crs = self.crs
+        x, y, _ = self._disambiguate_slice(index)
 
         if self.separate_files:
             data_list: list[Tensor] = []
@@ -600,7 +617,7 @@ class RasterDataset(GeoDataset):
             data = torch.cat(data_list, dim=-3)
         else:
             data = self._merge_or_stack(
-                df.filepath, index, self.band_indexes, out_crs=out_crs
+                list(df.filepath), index, self.band_indexes, out_crs=out_crs
             )
 
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
@@ -982,20 +999,11 @@ class XarrayDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
-            )
-
+        df = self._query_index(index)
         out_crs = self.crs
+        x, y, _ = self._disambiguate_slice(index)
 
-        image = self._merge_files(df.filepath, index, out_crs=out_crs)
+        image = self._merge_files(list(df.filepath), index, out_crs=out_crs)
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
@@ -1220,18 +1228,10 @@ class VectorDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.iloc[:: t.step]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-
-        if df.empty:
-            raise IndexError(
-                f'index: {index} not found in dataset with bounds: {self.bounds}'
-            )
+        df = self._query_index(index)
 
         out_crs = self.crs
+        x, y, _ = self._disambiguate_slice(index)
 
         shapes: list[tuple[Polygon | MultiPolygon, int]] = []
         for filepath in df.filepath:
