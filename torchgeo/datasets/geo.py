@@ -48,6 +48,7 @@ from .utils import (
     Path,
     Sample,
     _cached_transformer,
+    _share_equal_crss,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -103,6 +104,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     index: GeoDataFrame
     paths: Path | Iterable[Path]
     _res = (0.0, 0.0)
+    _prefer_native_crs = False
 
     #: Glob expression used to search for files.
     #:
@@ -482,6 +484,7 @@ class RasterDataset(GeoDataset):
         transforms: Callable[[Sample], Sample] | None = None,
         cache: bool = True,
         time_series: bool = False,
+        prefer_native_crs: bool = False,
     ) -> None:
         """Initialize a new RasterDataset instance.
 
@@ -501,10 +504,15 @@ class RasterDataset(GeoDataset):
                 (``is_image=False``), single-band data may have the channel
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
+            prefer_native_crs: if True, record each file's native CRS and pixel grid
+                origin in the index. Ignored if *crs* is specified.
 
         Raises:
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
+
+        .. versionadded:: 0.11
+           The *prefer_native_crs* parameter.
 
         .. versionadded:: 0.9
            The *time_series* parameter.
@@ -517,6 +525,7 @@ class RasterDataset(GeoDataset):
         self.transforms = transforms
         self.cache = cache
         self.time_series = time_series
+        self._prefer_native_crs = prefer_native_crs and crs is None
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
@@ -526,12 +535,16 @@ class RasterDataset(GeoDataset):
         filepaths = []
         datetimes = []
         geometries = []
+        native_crss = []
+        native_origins = []
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
                 vrt = None
                 try:
-                    vrt = self._load_warp_file(filepath=filepath, crs=crs)
+                    vrt, src_crs, src_transform = self._load_warp_file_with_source(
+                        filepath=filepath, crs=crs
+                    )
                     # See if file has a color map
                     if self.cmap is None:
                         try:
@@ -539,13 +552,18 @@ class RasterDataset(GeoDataset):
                             self.cmap = ListedColormap(colors)
                         except ValueError:
                             pass
-                    if crs is None:
-                        with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
+                    with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
+                        if crs is None:
                             crs = PROJ_CRS.from_user_input(vrt.crs)
+                        if self._prefer_native_crs:
+                            native_crs = PROJ_CRS.from_user_input(src_crs)
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
                     geometries.append(footprint)
+                    if self._prefer_native_crs:
+                        native_crss.append(native_crs)
+                        native_origins.append((src_transform.c, src_transform.f))
                     if res is None:
                         res = vrt.res
                 except rasterio.errors.RasterioIOError:
@@ -561,6 +579,9 @@ class RasterDataset(GeoDataset):
 
         if len(filepaths) == 0:
             raise DatasetNotFoundError(self)
+
+        # Equal CRSs with different WKT share one object, so pandas counts them as one
+        native_crss = _share_equal_crss(native_crss)
 
         if not self.separate_files:
             self.band_indexes = None
@@ -583,7 +604,12 @@ class RasterDataset(GeoDataset):
             self._res = res
 
         # Create the dataset index
-        data = {'filepath': filepaths}
+        data: dict[str, list[str] | list[PROJ_CRS] | list[tuple[float, float]]] = {
+            'filepath': filepaths
+        }
+        if self._prefer_native_crs:
+            data['native_crs'] = native_crss
+            data['native_origin'] = native_origins
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 
@@ -764,6 +790,24 @@ class RasterDataset(GeoDataset):
         Raises:
             ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
         """
+        return self._load_warp_file_with_source(filepath, crs)[0]
+
+    def _load_warp_file_with_source(
+        self, filepath: Path, crs: PROJ_CRS | None = None
+    ) -> tuple[DatasetReader | WarpedVRT, RIO_CRS, Affine]:
+        """Load and warp a file, also returning the source georeferencing.
+
+        Args:
+            filepath: file to load and warp
+            crs: Optionally specify which CRS to reproject to.
+
+        Returns:
+            file handle of warped VRT, and the source CRS and transform (derived
+            from GCPs if the file has no meaningful affine transform)
+
+        Raises:
+            ValueError: If dataset has no usable affine CRS/transform and no GCP CRS.
+        """
         src = rasterio.open(filepath)
 
         has_meaningful_affine = (
@@ -805,8 +849,8 @@ class RasterDataset(GeoDataset):
                 **override,
             )
             src.close()
-            return vrt
-        return src
+            return vrt, src_crs, src_transform
+        return src, src_crs, src_transform
 
     def _compute_affine_georeferencing(
         self, src: DatasetReader | WarpedVRT
@@ -1572,7 +1616,9 @@ class IntersectionDataset(GeoDataset):
 
         # Remove duplicate columns with a suffix
         # Pandas does not allow suffixes of suffixes
+        # Children read their own native columns
         columns = ['filepath_1', 'filepath_2']
+        columns += [c for c in self.index.columns if c.startswith('native_')]
         self.index.drop(columns=columns, inplace=True, errors='ignore')
 
         name = 'datetime'

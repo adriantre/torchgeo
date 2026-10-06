@@ -36,7 +36,7 @@ from torchgeo.datasets import (
     VectorDataset,
     XarrayDataset,
 )
-from torchgeo.datasets.utils import GeoSlice, Sample
+from torchgeo.datasets.utils import GeoSlice, Sample, _share_equal_crss
 
 MINT = pd.Timestamp(2025, 4, 24)
 MAXT = pd.Timestamp(2025, 4, 25)
@@ -486,6 +486,22 @@ class TestRasterDataset:
         assert naip1.crs != naip2.crs
         assert not math.isclose(naip1.res[0], naip2.res[0])
         assert not math.isclose(naip1.res[1], naip2.res[1])
+
+    def test_native_crs_column(self) -> None:
+        native = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Without native reads, the index has no native columns
+        warped = NAIP(self.naip_dir)
+        assert 'native_crs' not in warped.index
+        # The native column holds each file's own CRS
+        assert (native.index['native_crs'] == warped.crs).all()
+        # Equal CRSs with different WKT share one object, so pandas counts them as one
+        a = CRS.from_epsg(32632)
+        b = CRS.from_wkt(a.to_wkt('WKT1_GDAL'))
+        assert all(crs is a for crs in _share_equal_crss([a, b]))
+        # An explicit crs warps every read to it, disabling native reads
+        pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
+        assert pinned._prefer_native_crs is False
+        assert 'native_crs' not in pinned.index
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)

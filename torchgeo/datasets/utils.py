@@ -97,6 +97,29 @@ def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Tran
     return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
 
+def _share_equal_crss(crss: Iterable[pyproj.CRS]) -> list[pyproj.CRS]:
+    """Replace each CRS by the first equal one, so equal CRSs share one object.
+
+    pyproj compares CRSs by equivalence but hashes them by WKT, so pandas would count
+    equal CRSs with different WKT as different values.
+
+    Args:
+        crss: Coordinate reference systems to deduplicate.
+
+    Returns:
+        The CRSs, with equal ones replaced by the same object.
+    """
+    distinct: list[pyproj.CRS] = []
+    shared = []
+    for crs in crss:
+        match = next((seen for seen in distinct if seen == crs), None)
+        if match is None:
+            distinct.append(crs)
+            match = crs
+        shared.append(match)
+    return shared
+
+
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
 @dataclass(frozen=True)
 class BoundingBox:
