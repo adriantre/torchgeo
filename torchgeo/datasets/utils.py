@@ -297,6 +297,33 @@ def _select_index_crs(native_crss: Sequence[pyproj.CRS]) -> pyproj.CRS:
     return pyproj.CRS.from_epsg(6933)
 
 
+def _utm_crs(footprint: Polygon | MultiPolygon, crs: pyproj.CRS) -> pyproj.CRS | None:
+    """UTM zone at the center of a file footprint, to read it in a metric CRS.
+
+    Beyond UTM's latitudes, the polar stereographic (UPS) CRS is used.
+
+    Args:
+        footprint: Footprint of the file in *crs*.
+        crs: :term:`coordinate reference system (CRS)` of *footprint*.
+
+    Returns:
+        The WGS 84 UTM or UPS CRS, or None if the footprint is outside the polar
+        regions and wider than one UTM zone.
+    """
+    transformer = _cached_transformer(crs, pyproj.CRS.from_epsg(4326))
+    west, south, east, north = transformer.transform_bounds(*footprint.bounds)
+    lat = (south + north) / 2
+    if lat > 84 or lat < -80:
+        return pyproj.CRS.from_epsg(32661 if lat > 0 else 32761)
+    # A footprint crossing the antimeridian has west > east
+    width = east - west if east >= west else east - west + 360
+    if width > 6:
+        return None
+    lon = (west + width / 2 + 180) % 360 - 180
+    zone = int((lon + 180) // 6) % 60 + 1
+    return pyproj.CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
+
+
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
 @dataclass(frozen=True)
 class BoundingBox:

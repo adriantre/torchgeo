@@ -57,6 +57,7 @@ from .utils import (
     _share_equal_crss,
     _split_grid,
     _transform_res,
+    _utm_crs,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -698,7 +699,8 @@ class RasterDataset(GeoDataset):
             prefer_native_crs: if True, each query is read in the native CRS held by
                 most of its files, at :attr:`res`, without warping those files. The
                 index then uses the files' shared native CRS, or EPSG:6933 if they span
-                several. Ignored if *crs* is specified. Samples may then be in different
+                several. Geographic files are read in their UTM zone, so patches stay
+                metric. Ignored if *crs* is specified. Samples may then be in different
                 CRSs.
             index_crs: :term:`coordinate reference system (CRS)` of the index used to
                 look up and sample files. Unlike *crs*, it keeps *prefer_native_crs* on.
@@ -769,6 +771,28 @@ class RasterDataset(GeoDataset):
                     footprint = self.footprint_from_datasource(vrt)
                     if footprint is None:
                         footprint = shapely.box(*vrt.bounds)
+                    # Native reads assume meters, so a geographic file is read in its
+                    # UTM zone
+                    grid_width, grid_height = vrt.width, vrt.height
+                    utm_crs = None
+                    if self._prefer_native_crs and native_crs.is_geographic:
+                        # The footprint is in the CRS the file was opened in
+                        footprint_crs = native_crs if choose_index_crs else index_crs
+                        utm_crs = _utm_crs(footprint, cast(PROJ_CRS, footprint_crs))
+                    if utm_crs is not None:
+                        if choose_index_crs:
+                            # Choose the index CRS from the UTM zone
+                            footprint = _reproject_footprint(
+                                footprint, native_crs, utm_crs
+                            )
+                        native_crs = utm_crs
+                        utm_vrt = self._load_warp_file(
+                            filepath=filepath, crs=native_crs
+                        )
+                        # The UTM grid sets the file's pixel grid origin and default res
+                        src_crs, src_transform = utm_vrt.crs, utm_vrt.transform
+                        grid_width, grid_height = utm_vrt.width, utm_vrt.height
+                        utm_vrt.close()
                     geometries.append(footprint)
                     if self._prefer_native_crs:
                         native_crss.append(native_crs)
@@ -777,8 +801,8 @@ class RasterDataset(GeoDataset):
                         first_file = (
                             src_crs,
                             src_transform,
-                            vrt.width,
-                            vrt.height,
+                            grid_width,
+                            grid_height,
                             vrt.res,
                         )
                 except rasterio.errors.RasterioIOError:

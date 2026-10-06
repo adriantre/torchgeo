@@ -19,6 +19,7 @@ from _pytest.fixtures import SubRequest
 from geopandas import GeoDataFrame
 from pyproj import CRS
 from rasterio.enums import Resampling
+from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from torch import Tensor, nn
 from torch.utils.data import ConcatDataset
@@ -672,6 +673,65 @@ class TestRasterDataset:
         # crs and index_crs are mutually exclusive
         with pytest.raises(ValueError, match='at most one'):
             NAIP(self.naip_dir, crs=CRS.from_epsg(4326), index_crs=CRS.from_epsg(6933))
+
+    def test_geographic_source_read_in_utm(self, tmp_path: Path) -> None:
+        # A geographic (degrees) source: native reads assume a metric CRS.
+        profile: dict[str, Any] = {
+            'driver': 'GTiff',
+            'dtype': 'uint8',
+            'count': 1,
+            'width': 32,
+            'height': 32,
+            'crs': CRS.from_epsg(4326),
+            'transform': from_origin(6.0, 48.1, 0.001, 0.001),
+        }
+        with rasterio.open(tmp_path / 'geo_2024.tif', 'w', **profile) as dst:
+            dst.write(np.ones((32, 32), 'uint8'), 1)
+
+        # Read in the UTM zone at the file's center (metric), not in degrees
+        ds = CustomRasterDataset(torch.float32, tmp_path, prefer_native_crs=True)
+        # The file's native CRS becomes its UTM zone, which then serves as the index
+        # rather than indexing in degrees
+        assert ds.crs == CRS.from_epsg(32632)
+        native_crs = ds.index['native_crs'].iloc[0]
+        assert not native_crs.is_geographic
+        assert native_crs.to_epsg() == 32632
+        # res and the pixel grid origin come from the UTM grid (meters), not from the
+        # 0.001-degree source
+        assert ds.res[0] > 1.0
+        assert ds.index['native_origin'].iloc[0][0] > 1000
+
+        # With a pinned index CRS, the zone comes from the footprint in that CRS
+        pinned = CustomRasterDataset(
+            torch.float32,
+            tmp_path,
+            prefer_native_crs=True,
+            index_crs=CRS.from_epsg(6933),
+        )
+        assert pinned.index['native_crs'].iloc[0].to_epsg() == 32632
+
+        # Without prefer_native_crs the geographic CRS is left untouched
+        off = CustomRasterDataset(torch.float32, tmp_path)
+        assert off.crs.is_geographic
+
+        # Near the poles, the polar stereographic CRS is used, even for a file wider
+        # than one UTM zone
+        polar = tmp_path / 'polar'
+        polar.mkdir()
+        profile['transform'] = from_origin(0.0, 89.0, 1.0, 0.03125)
+        with rasterio.open(polar / 'polar_2024.tif', 'w', **profile) as dst:
+            dst.write(np.ones((32, 32), 'uint8'), 1)
+        ds = CustomRasterDataset(torch.float32, polar, prefer_native_crs=True)
+        assert ds.crs == CRS.from_epsg(32661)
+
+        # A file wider than one zone, here the whole globe, keeps its geographic CRS
+        wide = tmp_path / 'wide'
+        wide.mkdir()
+        profile['transform'] = from_origin(-180.0, 90.0, 11.25, 5.625)
+        with rasterio.open(wide / 'wide_2024.tif', 'w', **profile) as dst:
+            dst.write(np.ones((32, 32), 'uint8'), 1)
+        ds = CustomRasterDataset(torch.float32, wide, prefer_native_crs=True)
+        assert ds.index['native_crs'].iloc[0].is_geographic
 
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
