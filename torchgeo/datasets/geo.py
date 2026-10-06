@@ -52,6 +52,7 @@ from .utils import (
     _reproject_slice,
     _same_units,
     _share_equal_crss,
+    _split_grid,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -253,12 +254,35 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
         return df
 
+    def _grid_key(
+        self,
+        index: GeoSlice,
+        out_crs: PROJ_CRS,
+        out_res: tuple[float, float],
+        offset: tuple[float, float],
+    ) -> tuple[slice, slice, slice, PROJ_CRS, tuple[float, float], tuple[float, float]]:
+        """Build a subscript key that drives a child read onto a shared grid.
+
+        Args:
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            out_crs: CRS every child should read into.
+            out_res: Target resolution in units of *out_crs*.
+            offset: Offset of the target pixel grid from multiples of *out_res*.
+
+        Returns:
+            A grid-tagged spatiotemporal slice.
+        """
+        x, y, t = self._disambiguate_slice(index)
+        return (x, y, t, out_crs, out_res, offset)
+
     @abc.abstractmethod
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
 
         Args:
-            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             Sample of input, target, and/or metadata at that index.
@@ -392,6 +416,20 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             msg = f'{crs.name} is not in the crs_registry of {type(self).__name__}'
             raise ValueError(msg)
         return torch.tensor(registry.index(crs))
+
+    def _grid_crs_index(self, out_crs: PROJ_CRS) -> Tensor:
+        """Registry index for a sample read onto a grid in *out_crs*.
+
+        A combiner's grid may be outside :attr:`crs_registry`. Such reads report
+        :attr:`crs`, and the combiner replaces it.
+
+        Args:
+            out_crs: :term:`coordinate reference system (CRS)` the sample is read in.
+
+        Returns:
+            The index of *out_crs*, or of :attr:`crs`, as a 0-d tensor.
+        """
+        return self._crs_index(out_crs if out_crs in self.crs_registry else self.crs)
 
     @property
     def res(self) -> tuple[float, float]:
@@ -707,10 +745,12 @@ class RasterDataset(GeoDataset):
         return (self.crs, *natives)
 
     def __getitem__(self, index: GeoSlice) -> Sample:
-        """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
+        """Retrieve a sample, optionally reading into a caller-specified grid.
 
         Args:
-            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             Sample of input, target, and/or metadata at that index.
@@ -718,16 +758,18 @@ class RasterDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
+        index, out_crs, out_res, offset = _split_grid(index)
         df = self._query_index(index)
 
-        out_crs, out_res, offset = self._select_grid(df)
+        if out_crs is None:
+            out_crs, out_res, offset = self._select_grid(df)
         if out_crs != self.crs:
             index = _reproject_slice(
                 self._disambiguate_slice(index),
                 self.crs,
                 out_crs,
                 cast(tuple[float, float], out_res),
-                offset,
+                cast(tuple[float, float], offset),
             )
 
         x, y, _ = self._disambiguate_slice(index)
@@ -751,7 +793,7 @@ class RasterDataset(GeoDataset):
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
-            'crs_index': self._crs_index(out_crs),
+            'crs_index': self._grid_crs_index(out_crs),
             'transform': torch.tensor(transform),
         }
 
@@ -1363,10 +1405,12 @@ class VectorDataset(GeoDataset):
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
 
     def __getitem__(self, index: GeoSlice) -> Sample:
-        """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.
+        """Retrieve a sample, optionally rasterizing into a caller-specified grid.
 
         Args:
-            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index.
+            index: [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres] coordinates to index,
+                optionally tagged with a trailing ``(out_crs, out_res, offset)`` grid
+                spec.
 
         Returns:
             Sample of input, target, and/or metadata at that index.
@@ -1374,9 +1418,20 @@ class VectorDataset(GeoDataset):
         Raises:
             IndexError: If *index* is not found in the dataset.
         """
+        index, out_crs, out_res, offset = _split_grid(index)
         df = self._query_index(index)
 
-        out_crs = self.crs
+        if out_crs is None:
+            out_crs, out_res, offset = self._select_grid(df)
+        if out_crs != self.crs:
+            index = _reproject_slice(
+                self._disambiguate_slice(index),
+                self.crs,
+                out_crs,
+                cast(tuple[float, float], out_res),
+                cast(tuple[float, float], offset),
+            )
+
         x, y, _ = self._disambiguate_slice(index)
 
         shapes: list[tuple[Polygon | MultiPolygon, int]] = []
@@ -1388,8 +1443,9 @@ class VectorDataset(GeoDataset):
 
             # We need to know the bounding box of the query in the source CRS
             transformer = _cached_transformer(out_crs, src.crs)
-            (minx, miny) = transformer.transform(x.start, y.start)
-            (maxx, maxy) = transformer.transform(x.stop, y.stop)
+            minx, miny, maxx, maxy = transformer.transform_bounds(
+                x.start, y.start, x.stop, y.stop
+            )
 
             src = src.cx[minx:maxx, miny:maxy]
             src.to_crs(out_crs, inplace=True)
@@ -1478,7 +1534,7 @@ class VectorDataset(GeoDataset):
         transform = rasterio.transform.from_origin(x.start, y.stop, x.step, y.step)
         sample: Sample = {
             'bounds': self._slice_to_tensor(index),
-            'crs_index': self._crs_index(out_crs),
+            'crs_index': self._grid_crs_index(out_crs),
             'transform': torch.tensor(transform),
         }
 

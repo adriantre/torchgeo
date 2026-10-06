@@ -56,9 +56,40 @@ from .errors import DependencyNotFoundError
 #:    ds[xmin:xmax, ymin:ymax, tmin:tmax]
 #:
 #: All values are optional and will default to the spatiotemporal extent of the dataset.
+#:
+#: A fully specified slice may be tagged with a trailing ``(out_crs, out_res, offset)``
+#: grid spec, the grid to read it onto. The bounds stay in the index CRS.
 GeoSlice: TypeAlias = (  # noqa: UP040
-    slice | tuple[slice] | tuple[slice, slice] | tuple[slice, slice, slice]
+    slice
+    | tuple[slice]
+    | tuple[slice, slice]
+    | tuple[slice, slice, slice]
+    | tuple[slice, slice, slice, pyproj.CRS, tuple[float, float], tuple[float, float]]
 )
+
+
+def _split_grid(
+    index: GeoSlice,
+) -> tuple[
+    GeoSlice, pyproj.CRS | None, tuple[float, float] | None, tuple[float, float] | None
+]:
+    """Peel an optional trailing ``(out_crs, out_res, offset)`` grid spec off a slice.
+
+    Args:
+        index: A spatiotemporal slice, optionally tagged with a trailing grid spec.
+
+    Returns:
+        The slice with the grid spec removed, then the CRS, the resolution and the
+        pixel grid offset (all ``None`` if absent).
+    """
+    if (
+        isinstance(index, tuple)
+        and len(index) == 6
+        and isinstance(index[3], pyproj.CRS)
+    ):
+        return index[:3], index[3], index[4], index[5]
+    return index, None, None, None
+
 
 #: Path-like object.
 #:

@@ -868,6 +868,21 @@ class TestVectorDataset:
         assert isinstance(x['mask'], torch.Tensor)
         assert torch.equal(x['mask'].unique(), torch.tensor([0, 1], dtype=torch.uint8))
 
+    def test_getitem_foreign_crs(self, dataset: CustomVectorDataset) -> None:
+        # Rasterize into a caller-specified CRS via a CRS-tagged key (used when a
+        # combiner reads this dataset onto another dataset's grid).
+        dataset.task = 'semantic_segmentation'
+        out_crs = CRS.from_epsg(32631)
+        assert dataset.crs != out_crs
+        key = dataset._grid_key(dataset.bounds, out_crs, (10.0, 10.0), (0.0, 0.0))
+        x = dataset[key]
+        assert isinstance(x['mask'], torch.Tensor)
+        # out_crs is caller-provided and outside a bare dataset's own registry, so its
+        # crs_index falls back to the index CRS; a combiner re-stamps it against its
+        # unified registry (see test_combine_reads_anchor_native_crs).
+        assert out_crs not in dataset.crs_registry
+        assert dataset.crs_registry[int(x['crs_index'])] == dataset.crs
+
     def test_getitem_obj_det(self, dataset: CustomVectorDataset) -> None:
         dataset.task = 'object_detection'
         x = dataset[dataset.bounds]
