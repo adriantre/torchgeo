@@ -9,9 +9,11 @@ from __future__ import annotations
 import bz2
 import contextlib
 import fnmatch
+import functools
 import glob
 import hashlib
 import importlib
+import math
 import os
 import pathlib
 import shutil
@@ -28,8 +30,10 @@ from typing import Any, TypeAlias, cast, overload
 import numpy as np
 import pandas as pd
 import pyogrio
+import pyproj
 import rasterio
 import shapely.affinity
+import shapely.ops
 import torch
 from numpy.typing import NDArray
 from pandas import Timedelta, Timestamp
@@ -54,9 +58,40 @@ from .errors import DependencyNotFoundError
 #:    ds[xmin:xmax, ymin:ymax, tmin:tmax]
 #:
 #: All values are optional and will default to the spatiotemporal extent of the dataset.
+#:
+#: A fully specified slice may be tagged with a trailing ``(out_crs, out_res, offset)``
+#: grid spec, the grid to read it onto. The bounds stay in the index CRS.
 GeoSlice: TypeAlias = (  # noqa: UP040
-    slice | tuple[slice] | tuple[slice, slice] | tuple[slice, slice, slice]
+    slice
+    | tuple[slice]
+    | tuple[slice, slice]
+    | tuple[slice, slice, slice]
+    | tuple[slice, slice, slice, pyproj.CRS, tuple[float, float], tuple[float, float]]
 )
+
+
+def _split_grid(
+    index: GeoSlice,
+) -> tuple[
+    GeoSlice, pyproj.CRS | None, tuple[float, float] | None, tuple[float, float] | None
+]:
+    """Peel an optional trailing ``(out_crs, out_res, offset)`` grid spec off a slice.
+
+    Args:
+        index: A spatiotemporal slice, optionally tagged with a trailing grid spec.
+
+    Returns:
+        The slice with the grid spec removed, then the CRS, the resolution and the
+        pixel grid offset (all ``None`` if absent).
+    """
+    if (
+        isinstance(index, tuple)
+        and len(index) == 6
+        and isinstance(index[3], pyproj.CRS)
+    ):
+        return index[:3], index[3], index[4], index[5]
+    return index, None, None, None
+
 
 #: Path-like object.
 #:
@@ -73,9 +108,220 @@ Path: TypeAlias = str | os.PathLike[str]  # noqa: UP040
 #: * label: expected output classification or regression label
 #: * bbox_xyxy: expected output bounding box in (x1, y1, x2, y2) format
 #: * prediction: predicted output
+#: * bounds: spatiotemporal bounds of the sample
+#: * transform: affine transform of the sample
+#: * crs_index: index into the dataset's ``crs_registry`` giving the sample's CRS
 #:
 #: Values are of type torch.Tensor.
 Sample: TypeAlias = dict[str, Tensor]  # noqa: UP040
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Transformer:
+    """Cache CRS transformers, which are expensive to construct (~0.5 ms each).
+
+    Args:
+        src_crs: Source :term:`coordinate reference system (CRS)`.
+        dst_crs: Destination :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        A transformer from *src_crs* to *dst_crs*.
+    """
+    return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+
+def _same_units(crs1: pyproj.CRS, crs2: pyproj.CRS) -> bool:
+    """Whether two CRSs measure their horizontal axes in the same unit.
+
+    Args:
+        crs1: First :term:`coordinate reference system (CRS)`.
+        crs2: Second :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        True if the first axis of both CRSs has the same unit.
+    """
+    factor1 = crs1.axis_info[0].unit_conversion_factor
+    factor2 = crs2.axis_info[0].unit_conversion_factor
+    return factor1 == factor2
+
+
+def _share_equal_crss(crss: Iterable[pyproj.CRS]) -> list[pyproj.CRS]:
+    """Replace each CRS by the first equal one, so equal CRSs share one object.
+
+    pyproj compares CRSs by equivalence but hashes them by WKT, so pandas would count
+    equal CRSs with different WKT as different values.
+
+    Args:
+        crss: Coordinate reference systems to deduplicate.
+
+    Returns:
+        The CRSs, with equal ones replaced by the same object.
+    """
+    distinct: list[pyproj.CRS] = []
+    shared = []
+    for crs in crss:
+        match = next((seen for seen in distinct if seen == crs), None)
+        if match is None:
+            distinct.append(crs)
+            match = crs
+        shared.append(match)
+    return shared
+
+
+def _grid_offset(
+    origins: Iterable[tuple[float, float]], res: tuple[float, float]
+) -> tuple[float, float]:
+    """Offset of the files' pixel grid from multiples of *res*.
+
+    Files matched by one query may lie on different grids, so the most common
+    offset is used, with ties broken by the smallest offset.
+
+    Args:
+        origins: The pixel grid origin of each file.
+        res: Resolution of the grid.
+
+    Returns:
+        The x and y offset of the grid, in the units of *res*.
+    """
+    xres, yres = res
+    offsets = [(x % xres, y % yres) for x, y in origins]
+    return max(sorted(set(offsets)), key=offsets.count)
+
+
+def _reproject_slice(
+    index: tuple[slice, slice, slice],
+    src_crs: pyproj.CRS,
+    dst_crs: pyproj.CRS,
+    res: tuple[float, float],
+    offset: tuple[float, float],
+) -> tuple[slice, slice, slice]:
+    """Reproject a spatiotemporal slice from *src_crs* into *dst_crs*.
+
+    The query center is reprojected, and a box with the query's pixel dimensions is
+    rebuilt around it at *res*, snapped to the *res* grid shifted by *offset*.
+
+    Args:
+        index: Fully resolved [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres]
+            coordinates in *src_crs*.
+        src_crs: :term:`coordinate reference system (CRS)` of *index*.
+        dst_crs: :term:`coordinate reference system (CRS)` to reproject into.
+        res: Resolution in units of *dst_crs*.
+        offset: Offset of the data's pixel grid from multiples of *res*.
+
+    Returns:
+        The reprojected slice in *dst_crs*.
+    """
+    x, y, t = index
+    width = round((x.stop - x.start) / x.step)
+    height = round((y.stop - y.start) / y.step)
+    transformer = _cached_transformer(src_crs, dst_crs)
+    cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
+    xres, yres = res
+    xoff, yoff = offset
+    # Snap the lower-left corner to the res grid, then extend by the pixel
+    # dimensions, so the box edges fall on grid lines shared with the data tiles.
+    left = (cx - width * xres / 2 - xoff) // xres * xres + xoff
+    bottom = (cy - height * yres / 2 - yoff) // yres * yres + yoff
+    return (
+        slice(left, left + width * xres, xres),
+        slice(bottom, bottom + height * yres, yres),
+        t,
+    )
+
+
+def _merge_crs_registries(
+    registries: Iterable[Sequence[pyproj.CRS]],
+) -> tuple[pyproj.CRS, ...]:
+    """Merge the registries of a combiner's children, in the order they list them.
+
+    Args:
+        registries: The ``crs_registry`` of each child, the first child's first.
+
+    Returns:
+        The distinct CRSs of all registries, the first child's registry first.
+    """
+    crss: list[pyproj.CRS] = []
+    for registry in registries:
+        for crs in registry:
+            if crs not in crss:
+                crss.append(crs)
+    return tuple(crss)
+
+
+def _transform_res(transform: Affine) -> tuple[float, float]:
+    """Pixel size of an affine transform, as rasterio computes ``res``.
+
+    Args:
+        transform: Affine transform of a raster.
+
+    Returns:
+        The x and y pixel size.
+    """
+    return math.hypot(transform.a, transform.d), math.hypot(transform.b, transform.e)
+
+
+def _reproject_footprint(
+    footprint: Polygon | MultiPolygon, src_crs: pyproj.CRS, dst_crs: pyproj.CRS
+) -> Polygon | MultiPolygon:
+    """Reproject a file footprint, densifying its edges so curvature is kept.
+
+    Args:
+        footprint: Footprint in *src_crs*.
+        src_crs: :term:`coordinate reference system (CRS)` of *footprint*.
+        dst_crs: :term:`coordinate reference system (CRS)` to reproject to.
+
+    Returns:
+        The footprint in *dst_crs*.
+    """
+    if src_crs == dst_crs:
+        return footprint
+    # About 20 points per side of a rectangular footprint
+    dense = shapely.segmentize(footprint, footprint.length / 80)
+    transformer = _cached_transformer(src_crs, dst_crs)
+    return shapely.ops.transform(transformer.transform, dense)
+
+
+def _select_index_crs(native_crss: Sequence[pyproj.CRS]) -> pyproj.CRS:
+    """Choose the index CRS for a native-reading dataset from its files' CRSs.
+
+    Args:
+        native_crss: The native CRS of each indexed file, with equal CRSs sharing
+            one object.
+
+    Returns:
+        The files' shared native CRS, or EPSG:6933 (global, equal-area) if they span
+        several.
+    """
+    if len({id(crs) for crs in native_crss}) == 1:
+        return native_crss[0]
+    return pyproj.CRS.from_epsg(6933)
+
+
+def _utm_crs(footprint: Polygon | MultiPolygon, crs: pyproj.CRS) -> pyproj.CRS | None:
+    """UTM zone at the center of a file footprint, to read it in a metric CRS.
+
+    Beyond UTM's latitudes, the polar stereographic (UPS) CRS is used.
+
+    Args:
+        footprint: Footprint of the file in *crs*.
+        crs: :term:`coordinate reference system (CRS)` of *footprint*.
+
+    Returns:
+        The WGS 84 UTM or UPS CRS, or None if the footprint is outside the polar
+        regions and wider than one UTM zone.
+    """
+    transformer = _cached_transformer(crs, pyproj.CRS.from_epsg(4326))
+    west, south, east, north = transformer.transform_bounds(*footprint.bounds)
+    lat = (south + north) / 2
+    if lat > 84 or lat < -80:
+        return pyproj.CRS.from_epsg(32661 if lat > 0 else 32761)
+    # A footprint crossing the antimeridian has west > east
+    width = east - west if east >= west else east - west + 360
+    if width > 6:
+        return None
+    lon = (west + width / 2 + 180) % 360 - 180
+    zone = int((lon + 180) // 6) % 60 + 1
+    return pyproj.CRS.from_epsg((32600 if lat >= 0 else 32700) + zone)
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')
@@ -683,6 +929,8 @@ def concat_samples(samples: Iterable[Sample]) -> Sample:
     """Concatenate a list of samples along an existing axis.
 
     Useful for joining samples in a :class:`torchgeo.datasets.IntersectionDataset`.
+    Drops ``crs_index``, as indices into different datasets' registries can't be
+    combined.
 
     Args:
         samples: list of samples
@@ -691,10 +939,15 @@ def concat_samples(samples: Iterable[Sample]) -> Sample:
         a single sample
 
     .. versionadded:: 0.2
+
+    .. versionchanged:: 0.11
+       Drops ``crs_index``.
     """
     uncollated = _list_dict_to_dict_list(samples)
     collated = {}
     for key, value in uncollated.items():
+        if key == 'crs_index':
+            continue
         collated[key] = torch.cat(value)
     return collated
 
@@ -703,6 +956,8 @@ def merge_samples(samples: Iterable[Sample]) -> Sample:
     """Merge a list of samples.
 
     Useful for joining samples in a :class:`torchgeo.datasets.UnionDataset`.
+    Drops ``crs_index``, as indices into different datasets' registries can't be
+    combined.
 
     Args:
         samples: list of samples
@@ -711,10 +966,15 @@ def merge_samples(samples: Iterable[Sample]) -> Sample:
         a single sample
 
     .. versionadded:: 0.2
+
+    .. versionchanged:: 0.11
+       Drops ``crs_index``.
     """
     collated = {}
     for sample in samples:
         for key, value in sample.items():
+            if key == 'crs_index':
+                continue
             if key in collated:
                 # Take the maximum so that nodata values (zeros) get replaced
                 # by data values whenever possible

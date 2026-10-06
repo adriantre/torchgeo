@@ -28,6 +28,7 @@ from torchgeo.datasets.utils import (
     Sample,
     _binary_mask_to_polygon,
     _clean_binary_mask,
+    _grid_offset,
     array_to_tensor,
     check_integrity,
     concat_samples,
@@ -502,11 +503,19 @@ def test_disambiguate_timestamp(
     assert maxt == max_datetime
 
 
+def test_grid_offset() -> None:
+    # Tie between two grids: the smallest offset wins
+    assert _grid_offset([(5.0, 7.5), (4.0, 6.0)], (2.0, 3.0)) == (0.0, 0.0)
+
+
 class TestCollateFunctionsMatchingKeys:
     @pytest.fixture(scope='class')
     @classmethod
     def samples(cls) -> list[Sample]:
-        return [{'image': torch.tensor([1, 2, 0])}, {'image': torch.tensor([0, 0, 3])}]
+        return [
+            {'image': torch.tensor([1, 2, 0]), 'crs_index': torch.tensor(0)},
+            {'image': torch.tensor([0, 0, 3]), 'crs_index': torch.tensor(1)},
+        ]
 
     def test_stack_unbind_samples(self, samples: list[Sample]) -> None:
         sample = stack_samples(samples)
@@ -521,11 +530,13 @@ class TestCollateFunctionsMatchingKeys:
         sample = concat_samples(samples)
         assert sample['image'].size() == torch.Size([6])
         assert torch.allclose(sample['image'], torch.tensor([1, 2, 0, 0, 0, 3]))
+        assert 'crs_index' not in sample
 
     def test_merge_samples(self, samples: list[Sample]) -> None:
         sample = merge_samples(samples)
         assert sample['image'].size() == torch.Size([3])
         assert torch.allclose(sample['image'], torch.tensor([1, 2, 3]))
+        assert 'crs_index' not in sample
 
 
 class TestCollateFunctionsDifferingKeys:
