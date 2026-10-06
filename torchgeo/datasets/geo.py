@@ -50,10 +50,13 @@ from .utils import (
     _cached_transformer,
     _grid_offset,
     _merge_crs_registries,
+    _reproject_footprint,
     _reproject_slice,
     _same_units,
+    _select_index_crs,
     _share_equal_crss,
     _split_grid,
+    _transform_res,
     array_to_tensor,
     concat_samples,
     convert_poly_coords,
@@ -669,8 +672,10 @@ class RasterDataset(GeoDataset):
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
             prefer_native_crs: if True, each query is read in the native CRS held by
-                most of its files, at :attr:`res`, without warping those files. Ignored
-                if *crs* is specified. Samples may then be in different CRSs.
+                most of its files, at :attr:`res`, without warping those files. The
+                index then uses the files' shared native CRS, or EPSG:6933 if they span
+                several. Ignored if *crs* is specified. Samples may then be in different
+                CRSs.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -702,6 +707,12 @@ class RasterDataset(GeoDataset):
         geometries = []
         native_crss = []
         native_origins = []
+
+        # For native reads, the index CRS is chosen from the files' native CRSs after
+        # this loop, so until then each file is read in its native CRS
+        choose_index_crs = self._prefer_native_crs
+        first_file: tuple[RIO_CRS, Affine, int, int, tuple[float, float]] | None = None
+
         for filepath in self.files:
             match = re.match(filename_regex, os.path.basename(filepath))
             if match is not None:
@@ -718,7 +729,7 @@ class RasterDataset(GeoDataset):
                         except ValueError:
                             pass
                     with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
-                        if crs is None:
+                        if crs is None and not choose_index_crs:
                             crs = PROJ_CRS.from_user_input(vrt.crs)
                         if self._prefer_native_crs:
                             native_crs = PROJ_CRS.from_user_input(src_crs)
@@ -729,8 +740,14 @@ class RasterDataset(GeoDataset):
                     if self._prefer_native_crs:
                         native_crss.append(native_crs)
                         native_origins.append((src_transform.c, src_transform.f))
-                    if res is None:
-                        res = vrt.res
+                    if first_file is None:
+                        first_file = (
+                            src_crs,
+                            src_transform,
+                            vrt.width,
+                            vrt.height,
+                            vrt.res,
+                        )
                 except rasterio.errors.RasterioIOError:
                     # Skip files that rasterio is unable to read
                     continue
@@ -747,6 +764,32 @@ class RasterDataset(GeoDataset):
 
         # Equal CRSs with different WKT share one object, so pandas counts them as one
         native_crss = _share_equal_crss(native_crss)
+
+        if choose_index_crs:
+            crs = _select_index_crs(native_crss)
+            geometries = [
+                _reproject_footprint(footprint, native, crs)
+                for footprint, native in zip(geometries, native_crss)
+            ]
+
+        if res is None:
+            src_crs, src_transform, width, height, vrt_res = cast(
+                tuple[RIO_CRS, Affine, int, int, tuple[float, float]], first_file
+            )
+            if self._prefer_native_crs and _same_units(
+                native_crss[0], cast(PROJ_CRS, crs)
+            ):
+                # Native reads use res in the native CRS, so take the first file's own
+                res = _transform_res(src_transform)
+            elif choose_index_crs:
+                # The first file was read in its native CRS, so warp its grid to the
+                # index CRS
+                transform, _, _, _ = self._compute_affine_warp_grid(
+                    src_crs, src_transform, width, height, RIO_CRS.from_user_input(crs)
+                )
+                res = _transform_res(transform)
+            else:
+                res = vrt_res
 
         if not self.separate_files:
             self.band_indexes = None

@@ -13,6 +13,7 @@ import functools
 import glob
 import hashlib
 import importlib
+import math
 import os
 import pathlib
 import shutil
@@ -32,6 +33,7 @@ import pyogrio
 import pyproj
 import rasterio
 import shapely.affinity
+import shapely.ops
 import torch
 from numpy.typing import NDArray
 from pandas import Timedelta, Timestamp
@@ -244,6 +246,55 @@ def _merge_crs_registries(
             if crs not in crss:
                 crss.append(crs)
     return tuple(crss)
+
+
+def _transform_res(transform: Affine) -> tuple[float, float]:
+    """Pixel size of an affine transform, as rasterio computes ``res``.
+
+    Args:
+        transform: Affine transform of a raster.
+
+    Returns:
+        The x and y pixel size.
+    """
+    return math.hypot(transform.a, transform.d), math.hypot(transform.b, transform.e)
+
+
+def _reproject_footprint(
+    footprint: Polygon | MultiPolygon, src_crs: pyproj.CRS, dst_crs: pyproj.CRS
+) -> Polygon | MultiPolygon:
+    """Reproject a file footprint, densifying its edges so curvature is kept.
+
+    Args:
+        footprint: Footprint in *src_crs*.
+        src_crs: :term:`coordinate reference system (CRS)` of *footprint*.
+        dst_crs: :term:`coordinate reference system (CRS)` to reproject to.
+
+    Returns:
+        The footprint in *dst_crs*.
+    """
+    if src_crs == dst_crs:
+        return footprint
+    # About 20 points per side of a rectangular footprint
+    dense = shapely.segmentize(footprint, footprint.length / 80)
+    transformer = _cached_transformer(src_crs, dst_crs)
+    return shapely.ops.transform(transformer.transform, dense)
+
+
+def _select_index_crs(native_crss: Sequence[pyproj.CRS]) -> pyproj.CRS:
+    """Choose the index CRS for a native-reading dataset from its files' CRSs.
+
+    Args:
+        native_crss: The native CRS of each indexed file, with equal CRSs sharing
+            one object.
+
+    Returns:
+        The files' shared native CRS, or EPSG:6933 (global, equal-area) if they span
+        several.
+    """
+    if len({id(crs) for crs in native_crss}) == 1:
+        return native_crss[0]
+    return pyproj.CRS.from_epsg(6933)
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')

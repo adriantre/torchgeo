@@ -88,6 +88,11 @@ class CustomRasterDataset(RasterDataset):
         return self._dtype
 
 
+class TileRasterDataset(RasterDataset):
+    filename_glob = '*.tif'
+    filename_regex = r'^tile_\d+'
+
+
 class CustomVectorDataset(VectorDataset):
     filename_glob = '*.geojson'
     date_format = '%Y'
@@ -612,9 +617,50 @@ class TestRasterDataset:
         assert pinned._prefer_native_crs is False
         assert 'native_crs' not in pinned.index
 
+    def test_prefer_native_crs_multi_crs_index(self, tmp_path: Path) -> None:
+        # Files spanning multiple native CRSs cannot share one, so the index falls
+        # back to the global equal-area CRS (EPSG:6933).
+        profile: dict[str, Any] = {
+            'driver': 'GTiff',
+            'height': 4,
+            'width': 4,
+            'count': 1,
+            'dtype': 'uint8',
+            'transform': rasterio.transform.from_origin(500000, 4649776, 10, 10),
+        }
+        for name, epsg in (('tile_0', 32618), ('tile_1', 32619)):
+            profile['crs'] = CRS.from_epsg(epsg)
+            with rasterio.open(tmp_path / f'{name}.tif', 'w', **profile) as dst:
+                dst.write(np.ones((1, 4, 4), dtype='uint8'))
+        # A file matching the glob but not the regex is ignored, as is an unreadable
+        # file
+        (tmp_path / 'decoy.tif').write_text('not indexed')
+        (tmp_path / 'tile_2.tif').write_text('not a tiff')
+
+        ds = TileRasterDataset(paths=tmp_path, prefer_native_crs=True)
+        assert ds.crs == CRS.from_epsg(6933)
+        assert {c.to_epsg() for c in ds.index['native_crs']} == {32618, 32619}
+        # The default res is the files' own, not their res warped into EPSG:6933
+        assert ds.res == (10.0, 10.0)
+        # Footprints are reprojected into the index CRS
+        assert ds.index.crs == CRS.from_epsg(6933)
+        assert ds.index.geometry.iloc[0].bounds[0] < 0  # west of the 6933 origin
+
+        # A first file in feet can't give a metric res, so its grid is warped
+        profile['crs'] = CRS.from_epsg(2263)
+        profile['transform'] = rasterio.transform.from_origin(980000, 200000, 30, 30)
+        with rasterio.open(tmp_path / 'tile_0.tif', 'w', **profile) as dst:
+            dst.write(np.ones((1, 4, 4), dtype='uint8'))
+        ds = TileRasterDataset(paths=tmp_path, prefer_native_crs=True)
+        assert ds.crs == CRS.from_epsg(6933)
+        assert 1.0 < ds.res[0] < 20.0
+
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
-        # Files already in the index CRS need no reprojection
+        # A single-CRS dataset uses its shared native CRS as the index, so files are
+        # already in the index CRS and reads need no reprojection
+        native = CRS.from_user_input(ds.index['native_crs'].iloc[0])
+        assert ds.crs == native
         assert ds._select_out_crs(ds.index) == (ds.crs, None)
 
         # Files differ from the index CRS: read in their shared native CRS at res
