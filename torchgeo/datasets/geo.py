@@ -114,6 +114,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     _res = (0.0, 0.0)
     _prefer_native_crs = False
     _crs_registry: tuple[PROJ_CRS, ...] | None = None
+    #: Read CRS of a single-CRS native dataset, and whether it is read natively
+    _single_out_crs: tuple[PROJ_CRS, bool] | None = None
 
     #: Glob expression used to search for files.
     #:
@@ -221,11 +223,30 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             :attr:`res` (else ``None``).
         """
         if self._prefer_native_crs and 'native_crs' in df:
+            # Single-CRS dataset: the vote is constant, resolved once at init
+            if self._single_out_crs is not None:
+                out_crs, native = self._single_out_crs
+                return out_crs, self.res if native else None
             # Majority native CRS wins; ties broken by match order
             native = df['native_crs'].value_counts().index[0]
             if native != self.crs and _same_units(native, self.crs):
                 return native, self.res
         return self.crs, None
+
+    def _resolve_single_out_crs(self) -> None:
+        """Resolve the read CRS once if every file shares one native CRS.
+
+        The majority vote is then constant, so :meth:`_select_out_crs` skips it. Only
+        the decision is cached, since :attr:`res` can still change.
+        """
+        self._single_out_crs = None
+        if (
+            self._prefer_native_crs
+            and 'native_crs' in self.index
+            and self.index['native_crs'].nunique() == 1
+        ):
+            out_crs, out_res = self._select_out_crs(self.index)
+            self._single_out_crs = (out_crs, out_res is not None)
 
     def _select_grid(
         self, df: GeoDataFrame
@@ -459,6 +480,8 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
         registry = self._crs_registry
         if registry is not None:
             self._crs_registry = (new_crs, *registry[1:])
+        # The cached read CRS depends on crs
+        self._resolve_single_out_crs()
 
     @property
     def crs_registry(self) -> tuple[PROJ_CRS, ...]:
@@ -836,6 +859,8 @@ class RasterDataset(GeoDataset):
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=index_crs)
         # Build before any split copies the dataset, so all splits share the registry
         self._crs_registry = self._build_crs_registry()
+
+        self._resolve_single_out_crs()
 
     @property
     def crs_registry(self) -> tuple[PROJ_CRS, ...]:

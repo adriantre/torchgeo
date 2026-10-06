@@ -681,6 +681,13 @@ class TestRasterDataset:
         assert ds.crs == native
         assert ds._select_out_crs(ds.index) == (ds.crs, None)
 
+        # The read CRS is resolved once (fast-path); the single native CRS is the
+        # index CRS, so the read needs no reprojection
+        assert ds._single_out_crs == (native, False)
+
+        # Clearing the fast-path exercises the per-query selection path
+        ds._single_out_crs = None
+
         # Files differ from the index CRS: read in their shared native CRS at res
         differ = ds.index.copy()
         differ['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
@@ -709,7 +716,23 @@ class TestRasterDataset:
 
         # Disabled when prefer_native_crs is False
         off = NAIP(self.naip_dir)
+        assert off._single_out_crs is None
         assert off._select_out_crs(off.index) == (off.crs, None)
+
+        # Pinning a different index CRS keeps the single-CRS fast-path, but the read
+        # now reprojects from the index CRS to the files' native CRS at res
+        pinned = NAIP(
+            self.naip_dir, prefer_native_crs=True, index_crs=CRS.from_epsg(6933)
+        )
+        assert pinned._single_out_crs == (native, True)
+        assert pinned._select_out_crs(pinned.index) == (native, pinned.res)
+        # res is read live, not cached
+        pinned.res = (2.0, 2.0)
+        assert pinned._select_out_crs(pinned.index) == (native, (2.0, 2.0))
+        # Changing crs resolves the fast-path again. In the files' own CRS, reads need
+        # no reprojection.
+        pinned.crs = native
+        assert pinned._single_out_crs == (native, False)
 
     def test_prefer_native_crs_res(self) -> None:
         ds = NAIP(self.naip_dir, res=(2.0, 3.0), prefer_native_crs=True)
@@ -717,6 +740,7 @@ class TestRasterDataset:
         ds.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
         ds.index['native_origin'] = [(1.0, 1.5)] * len(ds.index)
         ds._crs_registry = None  # invalidate the cache after mutating the index
+        ds._single_out_crs = None  # invalidate the fast-path after mutating the index
 
         x, y, t = ds.bounds
         size = 8
@@ -759,6 +783,7 @@ class TestRasterDataset:
             ds1.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
             ds1.index['native_origin'] = [(0.25, 0.5)] * len(ds1.index)
             ds1._crs_registry = None  # rebuild the registry from the mutated index
+            ds1._single_out_crs = None  # invalidate the fast-path after mutating
 
             # Children's registries are merged, without repeating the shared index CRS
             assert combined.crs_registry == (ds1.crs, CRS.from_epsg(32618))
@@ -807,6 +832,7 @@ class TestRasterDataset:
         mask = RemapMaskNAIP(self.naip_dir)
         anchor.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
         anchor._crs_registry = None  # rebuild the registry from the mutated index
+        anchor._single_out_crs = None  # invalidate the fast-path after mutating
 
         # Mask is the right operand, so anchor (index 0) sets the shared grid and the
         # mask child is warped onto the anchor's foreign native CRS.
