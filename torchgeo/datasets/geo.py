@@ -105,6 +105,7 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
     paths: Path | Iterable[Path]
     _res = (0.0, 0.0)
     _prefer_native_crs = False
+    _crs_registry: tuple[PROJ_CRS, ...] | None = None
 
     #: Glob expression used to search for files.
     #:
@@ -306,6 +307,10 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
 
         print(f'Converting {self.__class__.__name__} CRS from {self.crs} to {new_crs}')
         self.index.to_crs(new_crs, inplace=True)
+        # Index 0 follows crs. The files' native CRSs stay, so splits keep decoding alike
+        registry = self._crs_registry
+        if registry is not None:
+            self._crs_registry = (new_crs, *registry[1:])
 
     @property
     def crs_registry(self) -> tuple[PROJ_CRS, ...]:
@@ -612,6 +617,43 @@ class RasterDataset(GeoDataset):
             data['native_origin'] = native_origins
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
         self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+        # Build before any split copies the dataset, so all splits share the registry
+        self._crs_registry = self._build_crs_registry()
+
+    @property
+    def crs_registry(self) -> tuple[PROJ_CRS, ...]:
+        """Distinct CRSs a query may be read in: index CRS first, then per-file natives.
+
+        Derived from the ``native_crs`` index column. Built in ``__init__``, so splits
+        of a dataset share it. When :attr:`crs` changes, only index 0 changes.
+
+        Returns:
+            The CRSs this dataset can emit: :attr:`crs` first, then the distinct native
+            CRSs sorted by WKT.
+
+        .. versionadded:: 0.11
+        """
+        registry = self._crs_registry
+        if registry is None:
+            registry = self._build_crs_registry()
+            self._crs_registry = registry
+        return registry
+
+    def _build_crs_registry(self) -> tuple[PROJ_CRS, ...]:
+        """Build :attr:`crs_registry` from :attr:`crs` and the ``native_crs`` column.
+
+        Returns:
+            :attr:`crs` first, then the distinct native CRSs sorted by WKT.
+        """
+        # self.crs first, so index 0 means self.crs in every GeoDataset. The natives
+        # are sorted by WKT, so the order doesn't depend on file order.
+        natives: list[PROJ_CRS] = []
+        if 'native_crs' in self.index:
+            unique = dict.fromkeys(self.index['native_crs'])
+            for crs in sorted(unique, key=lambda crs: crs.to_wkt()):
+                if crs not in natives:
+                    natives.append(crs)
+        return (self.crs, *natives)
 
     def __getitem__(self, index: GeoSlice) -> Sample:
         """Retrieve input, target, and/or metadata indexed by spatiotemporal slice.

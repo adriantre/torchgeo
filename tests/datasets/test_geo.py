@@ -35,6 +35,7 @@ from torchgeo.datasets import (
     UnionDataset,
     VectorDataset,
     XarrayDataset,
+    random_bbox_assignment,
 )
 from torchgeo.datasets.utils import GeoSlice, Sample, _share_equal_crss
 
@@ -479,6 +480,57 @@ class TestRasterDataset:
         x = ds[ds.bounds]
         assert ds.crs_registry[0] == ds.crs
         assert x['crs_index'] == 0
+
+    def test_crs_registry_multi_crs(self) -> None:
+        """The registry holds the distinct native CRSs in a fixed order.
+
+        The index CRS comes first, then the natives sorted by WKT, and the registry
+        survives pickling.
+        """
+        ds = NAIP(self.naip_dir)
+        index_crs = ds.crs
+        a, b = CRS.from_epsg(4326), CRS.from_epsg(32631)
+        # Simulate files spanning two foreign zones, with a repeat to exercise dedup
+        n = len(ds.index)
+        ds.index['native_crs'] = ([a, b] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        reg = ds.crs_registry
+        assert reg[0] == index_crs  # index CRS is always index 0
+        assert set(reg) == {index_crs, a, b}
+        assert len(reg) == 3  # deduped, no repeats
+
+        assert pickle.loads(pickle.dumps(ds)).crs_registry == reg
+
+        # File order does not affect the registry
+        ds.index['native_crs'] = ([b, a] * n)[:n]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == reg
+
+        # Equal CRSs with different WKT collapse to one entry
+        b_gdal = CRS.from_wkt(b.to_wkt('WKT1_GDAL'))
+        assert b_gdal == b and b_gdal.to_wkt() != b.to_wkt()
+        ds.index['native_crs'] = [b, b_gdal]  # ty: ignore[invalid-assignment]
+        ds._crs_registry = None
+        assert ds.crs_registry == (index_crs, b)
+
+    def test_crs_registry_shared_by_splits(self) -> None:
+        root = os.path.join('tests', 'data', 'raster')
+        paths = [
+            os.path.join(root, 'res_2-2_epsg_4087'),
+            os.path.join(root, 'res_4-4_epsg_4326'),
+        ]
+        ds = RasterDataset(paths, prefer_native_crs=True)
+        splits = random_bbox_assignment(ds, [0.5, 0.5])
+        # Each split holds one of the two files, but decodes crs_index like ds
+        assert all(split.crs_registry == ds.crs_registry for split in splits)
+        # Also after changing their crs, e.g. when combined with another dataset
+        for split in splits:
+            split.crs = CRS.from_epsg(3857)
+        assert splits[0].crs_registry == splits[1].crs_registry
+        # Changing it back restores the registry
+        splits[0].crs = ds.crs
+        assert splits[0].crs_registry == ds.crs_registry
 
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
