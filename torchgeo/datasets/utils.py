@@ -97,6 +97,21 @@ def _cached_transformer(src_crs: pyproj.CRS, dst_crs: pyproj.CRS) -> pyproj.Tran
     return pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
 
+def _same_units(crs1: pyproj.CRS, crs2: pyproj.CRS) -> bool:
+    """Whether two CRSs measure their horizontal axes in the same unit.
+
+    Args:
+        crs1: First :term:`coordinate reference system (CRS)`.
+        crs2: Second :term:`coordinate reference system (CRS)`.
+
+    Returns:
+        True if the first axis of both CRSs has the same unit.
+    """
+    factor1 = crs1.axis_info[0].unit_conversion_factor
+    factor2 = crs2.axis_info[0].unit_conversion_factor
+    return factor1 == factor2
+
+
 def _share_equal_crss(crss: Iterable[pyproj.CRS]) -> list[pyproj.CRS]:
     """Replace each CRS by the first equal one, so equal CRSs share one object.
 
@@ -118,6 +133,67 @@ def _share_equal_crss(crss: Iterable[pyproj.CRS]) -> list[pyproj.CRS]:
             match = crs
         shared.append(match)
     return shared
+
+
+def _grid_offset(
+    origins: Iterable[tuple[float, float]], res: tuple[float, float]
+) -> tuple[float, float]:
+    """Offset of the files' pixel grid from multiples of *res*.
+
+    Files matched by one query may lie on different grids, so the most common
+    offset is used, with ties broken by the smallest offset.
+
+    Args:
+        origins: The pixel grid origin of each file.
+        res: Resolution of the grid.
+
+    Returns:
+        The x and y offset of the grid, in the units of *res*.
+    """
+    xres, yres = res
+    offsets = [(x % xres, y % yres) for x, y in origins]
+    return max(sorted(set(offsets)), key=offsets.count)
+
+
+def _reproject_slice(
+    index: tuple[slice, slice, slice],
+    src_crs: pyproj.CRS,
+    dst_crs: pyproj.CRS,
+    res: tuple[float, float],
+    offset: tuple[float, float],
+) -> tuple[slice, slice, slice]:
+    """Reproject a spatiotemporal slice from *src_crs* into *dst_crs*.
+
+    The query center is reprojected, and a box with the query's pixel dimensions is
+    rebuilt around it at *res*, snapped to the *res* grid shifted by *offset*.
+
+    Args:
+        index: Fully resolved [xmin:xmax:xres, ymin:ymax:yres, tmin:tmax:tres]
+            coordinates in *src_crs*.
+        src_crs: :term:`coordinate reference system (CRS)` of *index*.
+        dst_crs: :term:`coordinate reference system (CRS)` to reproject into.
+        res: Resolution in units of *dst_crs*.
+        offset: Offset of the data's pixel grid from multiples of *res*.
+
+    Returns:
+        The reprojected slice in *dst_crs*.
+    """
+    x, y, t = index
+    width = round((x.stop - x.start) / x.step)
+    height = round((y.stop - y.start) / y.step)
+    transformer = _cached_transformer(src_crs, dst_crs)
+    cx, cy = transformer.transform((x.start + x.stop) / 2, (y.start + y.stop) / 2)
+    xres, yres = res
+    xoff, yoff = offset
+    # Snap the lower-left corner to the res grid, then extend by the pixel
+    # dimensions, so the box edges fall on grid lines shared with the data tiles.
+    left = (cx - width * xres / 2 - xoff) // xres * xres + xoff
+    bottom = (cy - height * yres / 2 - yoff) // yres * yres + yoff
+    return (
+        slice(left, left + width * xres, xres),
+        slice(bottom, bottom + height * yres, yres),
+        t,
+    )
 
 
 @deprecated('Use torchgeo.datasets.utils.GeoSlice or shapely.Polygon instead')

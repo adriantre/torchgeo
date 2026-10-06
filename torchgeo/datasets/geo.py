@@ -48,6 +48,9 @@ from .utils import (
     Path,
     Sample,
     _cached_transformer,
+    _grid_offset,
+    _reproject_slice,
+    _same_units,
     _share_equal_crss,
     array_to_tensor,
     concat_samples,
@@ -177,6 +180,53 @@ class GeoDataset(Dataset[Sample], abc.ABC, PlottingMixin):
             t.step,
         ]
         return torch.tensor(bounds)
+
+    def _select_out_crs(
+        self, df: GeoDataFrame
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None]:
+        """Choose the CRS and resolution to read a query into.
+
+        If :attr:`_prefer_native_crs` is set, the native CRS held by most of the matched
+        files is used, at :attr:`res`, unless its units differ from the index CRS's.
+        Otherwise the index CRS is returned with no resolution.
+
+        Args:
+            df: The rows of :attr:`index` matched by a query.
+
+        Returns:
+            A tuple of the CRS to read into and, when reading natively,
+            :attr:`res` (else ``None``).
+        """
+        if self._prefer_native_crs and 'native_crs' in df:
+            # Majority native CRS wins; ties broken by match order
+            native = df['native_crs'].value_counts().index[0]
+            if native != self.crs and _same_units(native, self.crs):
+                return native, self.res
+        return self.crs, None
+
+    def _select_grid(
+        self, df: GeoDataFrame
+    ) -> tuple[PROJ_CRS, tuple[float, float] | None, tuple[float, float]]:
+        """Choose the CRS, resolution and pixel grid offset to read a query into.
+
+        Args:
+            df: The rows of :attr:`index` matched by a query.
+
+        Returns:
+            The CRS and resolution from :meth:`_select_out_crs`, and the offset of
+            the files' pixel grid when reading natively (else ``(0.0, 0.0)``).
+        """
+        out_crs, out_res = self._select_out_crs(df)
+        if out_crs == self.crs:
+            return out_crs, out_res, (0.0, 0.0)
+        # Only the files in out_crs define its pixel grid
+        return (
+            out_crs,
+            out_res,
+            _grid_offset(
+                df.loc[df['native_crs'] == out_crs, 'native_origin'], self.res
+            ),
+        )
 
     def _query_index(self, index: GeoSlice) -> GeoDataFrame:
         """Find the files in :attr:`index` matched by a query.
@@ -509,8 +559,9 @@ class RasterDataset(GeoDataset):
                 (``is_image=False``), single-band data may have the channel
                 dimension squeezed, resulting in shapes ``[T, H, W]`` or
                 ``[H, W]`` when ``C == 1``.
-            prefer_native_crs: if True, record each file's native CRS and pixel grid
-                origin in the index. Ignored if *crs* is specified.
+            prefer_native_crs: if True, each query is read in the native CRS held by
+                most of its files, at :attr:`res`, without warping those files. Ignored
+                if *crs* is specified. Samples may then be in different CRSs.
 
         Raises:
             AssertionError: If *bands* are invalid.
@@ -669,7 +720,16 @@ class RasterDataset(GeoDataset):
         """
         df = self._query_index(index)
 
-        out_crs = self.crs
+        out_crs, out_res, offset = self._select_grid(df)
+        if out_crs != self.crs:
+            index = _reproject_slice(
+                self._disambiguate_slice(index),
+                self.crs,
+                out_crs,
+                cast(tuple[float, float], out_res),
+                offset,
+            )
+
         x, y, _ = self._disambiguate_slice(index)
 
         if self.separate_files:
@@ -1645,6 +1705,9 @@ class IntersectionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         # Spatial intersection
         index1 = dataset1.index.reset_index()
@@ -1820,6 +1883,9 @@ class UnionDataset(GeoDataset):
 
         dataset2.crs = dataset1.crs
         dataset2.res = dataset1.res
+        # Children must share a grid so samples can be combined
+        dataset1._prefer_native_crs = False
+        dataset2._prefer_native_crs = False
 
         self.index = pd.concat([dataset1.index, dataset2.index])
 

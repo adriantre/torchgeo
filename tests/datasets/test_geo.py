@@ -532,6 +532,17 @@ class TestRasterDataset:
         splits[0].crs = ds.crs
         assert splits[0].crs_registry == ds.crs_registry
 
+    def test_crs_registry_without_native_crs_column(self) -> None:
+        # Datasets with a custom index (e.g. MetaCHM) omit the native_crs column; the
+        # registry then holds only the index CRS and every sample is read in it, even
+        # with prefer_native_crs.
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        ds.index = ds.index.drop(columns=['native_crs'])
+        ds._crs_registry = None  # rebuild the registry from the custom index
+        assert ds.crs_registry == (ds.crs,)
+        x = ds[ds.bounds]
+        assert ds.crs_registry[int(x['crs_index'])] == ds.crs
+
     def test_reprojection(self) -> None:
         naip1 = NAIP(self.naip_dir, crs=CRS.from_epsg(4087))
         naip2 = NAIP(self.naip_dir, crs=CRS.from_epsg(4326))
@@ -554,6 +565,66 @@ class TestRasterDataset:
         pinned = NAIP(self.naip_dir, prefer_native_crs=True, crs=CRS.from_epsg(4326))
         assert pinned._prefer_native_crs is False
         assert 'native_crs' not in pinned.index
+
+    def test_select_out_crs(self) -> None:
+        ds = NAIP(self.naip_dir, prefer_native_crs=True)
+        # Files already in the index CRS need no reprojection
+        assert ds._select_out_crs(ds.index) == (ds.crs, None)
+
+        # Files differ from the index CRS: read in their shared native CRS at res
+        differ = ds.index.copy()
+        differ['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(differ) == (CRS.from_epsg(32618), ds.res)
+
+        # Foreign native CRS in other units: res can't apply, use the index CRS
+        degrees = ds.index.copy()
+        degrees['native_crs'] = CRS.from_epsg(4326)  # ty: ignore[invalid-assignment]
+        assert ds._select_out_crs(degrees) == (ds.crs, None)
+
+        # Mixed native CRSs: the majority native CRS wins
+        mixed = pd.concat([ds.index, ds.index.iloc[[0]]])
+        mixed['native_crs'] = [  # ty: ignore[invalid-assignment]
+            CRS.from_epsg(32618),
+            CRS.from_epsg(32631),
+            CRS.from_epsg(32618),
+        ]
+        assert ds._select_out_crs(mixed) == (CRS.from_epsg(32618), ds.res)
+
+        # Only files in the majority CRS set the pixel grid offset
+        five = pd.concat([ds.index.iloc[[0]]] * 5)
+        a, b = CRS.from_epsg(32618), CRS.from_epsg(32631)
+        five['native_crs'] = [a, a, a, b, b]  # ty: ignore[invalid-assignment]
+        five['native_origin'] = [(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)] + [(0.4, 0.4)] * 2
+        assert ds._select_grid(five)[2] == (0.1, 0.1)
+
+        # Disabled when prefer_native_crs is False
+        off = NAIP(self.naip_dir)
+        assert off._select_out_crs(off.index) == (off.crs, None)
+
+    def test_prefer_native_crs_res(self) -> None:
+        ds = NAIP(self.naip_dir, res=(2.0, 3.0), prefer_native_crs=True)
+        # Simulate all files sharing a foreign native CRS, on a grid offset from 0
+        ds.index['native_crs'] = CRS.from_epsg(32618)  # ty: ignore[invalid-assignment]
+        ds.index['native_origin'] = [(1.0, 1.5)] * len(ds.index)
+        ds._crs_registry = None  # invalidate the cache after mutating the index
+
+        x, y, t = ds.bounds
+        size = 8
+        query = (
+            slice(x.start, x.start + size * x.step, x.step),
+            slice(y.start, y.start + size * y.step, y.step),
+            t,
+        )
+        sample = ds[query]
+        # Read in the native CRS at res
+        assert ds.crs_registry[int(sample['crs_index'])] == CRS.from_epsg(32618)
+        assert sample['bounds'][2].item() == 2.0
+        assert sample['bounds'][5].item() == 3.0
+        assert sample['image'].shape[-2:] == (size, size)
+        # The read window lies on the files' grid
+        xmin, ymin = sample['bounds'][0].item(), sample['bounds'][3].item()
+        assert math.isclose((xmin - 1.0) / 2.0, round((xmin - 1.0) / 2.0))
+        assert math.isclose((ymin - 1.5) / 3.0, round((ymin - 1.5) / 3.0))
 
     def test_cached_load_warp_file_keyed_on_crs(self) -> None:
         ds = NAIP(self.naip_dir)

@@ -28,6 +28,7 @@ from torchgeo.datasets.utils import (
     Sample,
     _binary_mask_to_polygon,
     _clean_binary_mask,
+    _grid_offset,
     array_to_tensor,
     check_integrity,
     concat_samples,
@@ -500,6 +501,11 @@ def test_disambiguate_timestamp(
     mint, maxt = disambiguate_timestamp(date_string, format)
     assert mint == min_datetime
     assert maxt == max_datetime
+
+
+def test_grid_offset() -> None:
+    # Tie between two grids: the smallest offset wins
+    assert _grid_offset([(5.0, 7.5), (4.0, 6.0)], (2.0, 3.0)) == (0.0, 0.0)
 
 
 class TestCollateFunctionsMatchingKeys:
