@@ -652,13 +652,14 @@ class RasterDataset(GeoDataset):
         cache: bool = True,
         time_series: bool = False,
         prefer_native_crs: bool = False,
+        index_crs: PROJ_CRS | None = None,
     ) -> None:
         """Initialize a new RasterDataset instance.
 
         Args:
             paths: one or more root directories to search or files to load
-            crs: :term:`coordinate reference system (CRS)` to warp to
-                (defaults to the CRS of the first file found)
+            crs: :term:`coordinate reference system (CRS)` to warp every read to
+                (defaults to the CRS of the first file found). Also pins the index CRS.
             res: resolution of the dataset in units of CRS
                 (defaults to the resolution of the first file found)
             bands: bands to return (defaults to all bands)
@@ -676,13 +677,18 @@ class RasterDataset(GeoDataset):
                 index then uses the files' shared native CRS, or EPSG:6933 if they span
                 several. Ignored if *crs* is specified. Samples may then be in different
                 CRSs.
+            index_crs: :term:`coordinate reference system (CRS)` of the index used to
+                look up and sample files. Unlike *crs*, it keeps *prefer_native_crs* on.
+                Cannot be combined with *crs*. Defaults to the index CRS chosen by
+                *prefer_native_crs*, otherwise the first file's CRS.
 
         Raises:
             AssertionError: If *bands* are invalid.
             DatasetNotFoundError: If dataset is not found.
+            ValueError: If both *crs* and *index_crs* are specified.
 
         .. versionadded:: 0.11
-           The *prefer_native_crs* parameter.
+           The *prefer_native_crs* and *index_crs* parameters.
 
         .. versionadded:: 0.9
            The *time_series* parameter.
@@ -695,7 +701,11 @@ class RasterDataset(GeoDataset):
         self.transforms = transforms
         self.cache = cache
         self.time_series = time_series
+        # `crs` also warps every read, disabling native reads. Both set the index CRS.
         self._prefer_native_crs = prefer_native_crs and crs is None
+        if crs is not None and index_crs is not None:
+            raise ValueError('Specify at most one of `crs` and `index_crs`.')
+        index_crs = index_crs or crs
 
         if self.all_bands:
             assert set(self.bands) <= set(self.all_bands)
@@ -710,7 +720,7 @@ class RasterDataset(GeoDataset):
 
         # For native reads, the index CRS is chosen from the files' native CRSs after
         # this loop, so until then each file is read in its native CRS
-        choose_index_crs = self._prefer_native_crs
+        choose_index_crs = self._prefer_native_crs and index_crs is None
         first_file: tuple[RIO_CRS, Affine, int, int, tuple[float, float]] | None = None
 
         for filepath in self.files:
@@ -719,7 +729,7 @@ class RasterDataset(GeoDataset):
                 vrt = None
                 try:
                     vrt, src_crs, src_transform = self._load_warp_file_with_source(
-                        filepath=filepath, crs=crs
+                        filepath=filepath, crs=index_crs
                     )
                     # See if file has a color map
                     if self.cmap is None:
@@ -729,8 +739,8 @@ class RasterDataset(GeoDataset):
                         except ValueError:
                             pass
                     with rasterio.Env(OSR_WKT_FORMAT='WKT2_2018'):
-                        if crs is None and not choose_index_crs:
-                            crs = PROJ_CRS.from_user_input(vrt.crs)
+                        if index_crs is None and not choose_index_crs:
+                            index_crs = PROJ_CRS.from_user_input(vrt.crs)
                         if self._prefer_native_crs:
                             native_crs = PROJ_CRS.from_user_input(src_crs)
                     footprint = self.footprint_from_datasource(vrt)
@@ -766,9 +776,9 @@ class RasterDataset(GeoDataset):
         native_crss = _share_equal_crss(native_crss)
 
         if choose_index_crs:
-            crs = _select_index_crs(native_crss)
+            index_crs = _select_index_crs(native_crss)
             geometries = [
-                _reproject_footprint(footprint, native, crs)
+                _reproject_footprint(footprint, native, index_crs)
                 for footprint, native in zip(geometries, native_crss)
             ]
 
@@ -777,7 +787,7 @@ class RasterDataset(GeoDataset):
                 tuple[RIO_CRS, Affine, int, int, tuple[float, float]], first_file
             )
             if self._prefer_native_crs and _same_units(
-                native_crss[0], cast(PROJ_CRS, crs)
+                native_crss[0], cast(PROJ_CRS, index_crs)
             ):
                 # Native reads use res in the native CRS, so take the first file's own
                 res = _transform_res(src_transform)
@@ -785,7 +795,11 @@ class RasterDataset(GeoDataset):
                 # The first file was read in its native CRS, so warp its grid to the
                 # index CRS
                 transform, _, _, _ = self._compute_affine_warp_grid(
-                    src_crs, src_transform, width, height, RIO_CRS.from_user_input(crs)
+                    src_crs,
+                    src_transform,
+                    width,
+                    height,
+                    RIO_CRS.from_user_input(index_crs),
                 )
                 res = _transform_res(transform)
             else:
@@ -819,7 +833,7 @@ class RasterDataset(GeoDataset):
             data['native_crs'] = native_crss
             data['native_origin'] = native_origins
         index = pd.IntervalIndex.from_tuples(datetimes, closed='both', name='datetime')
-        self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=crs)
+        self.index = GeoDataFrame(data, index=index, geometry=geometries, crs=index_crs)
         # Build before any split copies the dataset, so all splits share the registry
         self._crs_registry = self._build_crs_registry()
 

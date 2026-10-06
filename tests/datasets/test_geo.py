@@ -655,6 +655,24 @@ class TestRasterDataset:
         assert ds.crs == CRS.from_epsg(6933)
         assert 1.0 < ds.res[0] < 20.0
 
+    def test_index_crs(self) -> None:
+        # index_crs pins the index CRS without disabling native reads
+        ds = NAIP(self.naip_dir, prefer_native_crs=True, index_crs=CRS.from_epsg(6933))
+        assert ds._prefer_native_crs is True
+        assert ds.crs == CRS.from_epsg(6933)
+        native = ds.index['native_crs'].iloc[0]
+        assert native != ds.crs
+        assert ds._select_out_crs(ds.index) == (native, ds.res)
+
+        # index_crs without a native preference just sets the index CRS
+        assert NAIP(self.naip_dir, index_crs=CRS.from_epsg(4326)).crs == CRS.from_epsg(
+            4326
+        )
+
+        # crs and index_crs are mutually exclusive
+        with pytest.raises(ValueError, match='at most one'):
+            NAIP(self.naip_dir, crs=CRS.from_epsg(4326), index_crs=CRS.from_epsg(6933))
+
     def test_select_out_crs(self) -> None:
         ds = NAIP(self.naip_dir, prefer_native_crs=True)
         # A single-CRS dataset uses its shared native CRS as the index, so files are
